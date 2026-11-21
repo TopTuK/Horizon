@@ -1,0 +1,57 @@
+@import 'tailwindcss';
+
+@theme {
+  --font-sans: 'Inter', ui-sans-serif, system-ui, -apple-system, 'Segoe UI', sans-serif;
+  --color-dev: #818cf8;
+  --color-test: #34d399;
+}
+
+html,
+body {
+  @apply bg-zinc-950 text-zinc-200 antialiased;
+  color-scheme: dark;
+}
+
+input[type='number']::-webkit-inner-spin-button,
+input[type='number']::-webkit-outer-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+input[type='number'] {
+  -moz-appearance: textfield;
+}
+
+::-webkit-scrollbar {
+  height: 10px;
+  width: 10px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  @apply rounded-full bg-zinc-700;
+}
+
+@utility field {
+  @apply rounded-md border border-zinc-800 bg-zinc-900 px-2 py-1 text-sm text-zinc-100 outline-none transition focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500/40;
+}
+
+@utility btn {
+  @apply inline-flex items-center gap-1.5 rounded-md border border-zinc-800 bg-zinc-900 px-3 py-1.5 text-sm text-zinc-300 transition hover:border-zinc-700 hover:bg-zinc-800 hover:text-zinc-100;
+}
+
+@utility card {
+  @apply rounded-xl border border-zinc-800/80 bg-zinc-900/60 backdrop-blur;
+}
+
+.hatched {
+  background-image: repeating-linear-gradient(
+    -45deg,
+    rgb(248 113 113 / 0.35) 0 6px,
+    transparent 6px 12px
+  );
+}
+
+.drop-hot {
+  @apply ring-2 ring-indigo-400/70 bg-indigo-500/10;
+}
