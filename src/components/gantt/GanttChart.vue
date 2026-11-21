@@ -38,7 +38,10 @@ const width = LABEL_W + 12 * MONTH_W
   <section id="gantt" class="scroll-mt-20">
     <div class="mb-4 flex flex-wrap items-end justify-between gap-4">
       <div>
-        <h2 class="text-lg font-semibold text-zinc-100">Smart Gantt Chart</h2>
+        <h2 class="flex items-center gap-2 text-lg font-semibold text-zinc-100">
+          <img src="/icons/gantt.png" alt="" class="size-8 rounded-lg" />
+          Smart Gantt Chart
+        </h2>
         <p class="text-sm text-zinc-500">
           Drag a new activity onto a swimlane, drag bars to reschedule, drag people from the pools onto allocation cells.
         </p>
