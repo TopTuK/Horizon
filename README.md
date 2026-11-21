@@ -41,6 +41,14 @@ npm install
 npm run dev
 ```
 
+## Docker
+
+```sh
+docker compose up --build
+```
+
+The app is served at http://localhost:8080. Production deploy, behind the shared nginx-proxy, is described in [deployment.md](deployment.md).
+
 ## License
 
 [MIT](LICENSE)
