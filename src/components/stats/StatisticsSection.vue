@@ -89,7 +89,10 @@ const yearTotals = computed(() => {
 <template>
   <section id="stats" class="scroll-mt-20">
     <div class="mb-4">
-      <h2 class="text-lg font-semibold text-zinc-100">Statistics · {{ planner.year }}</h2>
+      <h2 class="flex items-center gap-2 text-lg font-semibold text-zinc-100">
+        <img src="/icons/stats.png" alt="" class="size-8 rounded-lg" />
+        Statistics · {{ planner.year }}
+      </h2>
       <p class="text-sm text-zinc-500">
         {{ calendarDays }} working days in the calendar · {{ yearTotals.lanes }} projects · {{ yearTotals.activities }} activities
         this year

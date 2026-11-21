@@ -1,6 +1,6 @@
 <script setup>
 import { ref } from 'vue'
-import { Download, Orbit, RotateCcw, Upload } from 'lucide-vue-next'
+import { Download, RotateCcw, Upload } from 'lucide-vue-next'
 import { usePlanner } from '../stores/planner'
 import { YEARS } from '../lib/calendar'
 
@@ -8,9 +8,9 @@ const planner = usePlanner()
 const fileInput = ref(null)
 
 const sections = [
-  { id: 'pools', label: 'Resource Pool' },
-  { id: 'gantt', label: 'Smart Gantt' },
-  { id: 'stats', label: 'Statistics' },
+  { id: 'pools', label: 'Resource Pool', icon: '/icons/pool.png' },
+  { id: 'gantt', label: 'Smart Gantt', icon: '/icons/gantt.png' },
+  { id: 'stats', label: 'Statistics', icon: '/icons/stats.png' },
 ]
 
 async function onImport(e) {
@@ -33,8 +33,7 @@ function onReset() {
   <header class="sticky top-0 z-40 border-b border-zinc-800/80 bg-zinc-950/80 backdrop-blur">
     <div class="flex flex-wrap items-center gap-x-6 gap-y-2 px-6 py-3">
       <div class="flex items-center gap-2">
-        <Orbit class="size-6 text-indigo-400" />
-        <span class="text-lg font-semibold tracking-tight text-zinc-100">Horizon</span>
+        <img src="/icons/horizon-logo.png" alt="Horizon" class="h-9 w-auto" />
         <span class="hidden text-sm text-zinc-500 sm:inline">roadmap planner</span>
       </div>
       <nav class="flex gap-1">
@@ -42,9 +41,11 @@ function onReset() {
           v-for="s in sections"
           :key="s.id"
           :href="'#' + s.id"
-          class="rounded-md px-3 py-1.5 text-sm text-zinc-400 transition hover:bg-zinc-900 hover:text-zinc-100"
-          >{{ s.label }}</a
+          class="flex items-center gap-2 rounded-md px-3 py-1.5 text-sm text-zinc-400 transition hover:bg-zinc-900 hover:text-zinc-100"
         >
+          <img :src="s.icon" alt="" class="size-5 rounded" />
+          {{ s.label }}
+        </a>
       </nav>
       <div class="ml-auto flex items-center gap-2">
         <select v-model.number="planner.year" class="field" title="Planning year">
