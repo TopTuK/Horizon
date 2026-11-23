@@ -41,27 +41,96 @@ const poolStats = computed(() =>
   }),
 )
 
+const POOL_NAME = { dev: 'Development', test: 'Testing' }
+
+function withAlpha(hex, alpha) {
+  const h = hex.replace('#', '')
+  const full = h.length === 3 ? [...h].map((c) => c + c).join('') : h
+  const n = Number.parseInt(full, 16)
+  const r = (n >> 16) & 255
+  const g = (n >> 8) & 255
+  const b = n & 255
+  return `rgba(${r}, ${g}, ${b}, ${alpha})`
+}
+
+/** Per-project monthly share of each pool. Lanes with no hours this year are omitted. */
+const projectMonths = computed(() => {
+  const rows = []
+  for (const lane of planner.state.swimlanes) {
+    const series = {}
+    for (const p of POOLS) {
+      series[p] = planner.load.map((row) => {
+        let hours = 0
+        let people = 0
+        for (const a of planner.state.activities) {
+          if (a.laneId !== lane.id) continue
+          const e = planner.results[a.id]?.months[row.key]?.[p]
+          if (!e) continue
+          hours += e.hours || 0
+          people += e.people || 0
+        }
+        const capacity = row[p].capacity
+        return { hours, people, pct: capacity ? (hours / capacity) * 100 : 0 }
+      })
+    }
+    const totalHours = POOLS.reduce((sum, p) => sum + series[p].reduce((s, m) => s + m.hours, 0), 0)
+    if (totalHours > 0) rows.push({ lane, series })
+  }
+  return rows
+})
+
 const chartData = computed(() => ({
   labels: MONTHS,
-  datasets: POOLS.map((p) => ({
-    label: META[p].short,
-    data: planner.load.map((r) => Math.round(r[p].utilization * 100)),
-    backgroundColor: planner.load.map((r) => (r[p].over ? '#f87171' : META[p].color)),
-    borderRadius: 4,
-    maxBarThickness: 22,
-  })),
+  datasets: projectMonths.value.flatMap(({ lane, series }) =>
+    POOLS.map((p) => ({
+      label: lane.name,
+      stack: p,
+      laneName: lane.name,
+      poolName: POOL_NAME[p],
+      hours: series[p].map((m) => m.hours),
+      people: series[p].map((m) => m.people),
+      data: series[p].map((m) => m.pct),
+      backgroundColor: p === 'dev' ? lane.color : withAlpha(lane.color, 0.55),
+      maxBarThickness: 22,
+    })),
+  ),
 }))
 
 const chartOptions = {
   responsive: true,
   maintainAspectRatio: false,
   plugins: {
-    legend: { labels: { color: '#a1a1aa', boxWidth: 10 } },
-    tooltip: { callbacks: { label: (c) => `${c.dataset.label}: ${c.parsed.y}% utilized` } },
+    legend: {
+      onClick(e, legendItem, legend) {
+        const chart = legend.chart
+        const name = chart.data.datasets[legendItem.datasetIndex]?.label
+        const show = !chart.isDatasetVisible(legendItem.datasetIndex)
+        chart.data.datasets.forEach((ds, i) => {
+          if (ds.label === name) chart.setDatasetVisibility(i, show)
+        })
+        chart.update()
+      },
+      labels: {
+        color: '#a1a1aa',
+        boxWidth: 10,
+        filter: (item, data) => data.datasets[item.datasetIndex]?.stack === 'dev',
+      },
+    },
+    tooltip: {
+      filter: (item) => (item.dataset.hours?.[item.dataIndex] || 0) > 0,
+      callbacks: {
+        label: (c) => {
+          const hours = c.dataset.hours[c.dataIndex]
+          const people = c.dataset.people[c.dataIndex]
+          return `${c.dataset.laneName} · ${c.dataset.poolName}: ${fmtNum(c.parsed.y, 0)}% · ${fmtHours(hours)} h · ${fmtNum(people, 1)} people`
+        },
+      },
+    },
   },
   scales: {
-    x: { ticks: { color: '#71717a' }, grid: { display: false } },
+    x: { stacked: true, ticks: { color: '#71717a' }, grid: { display: false } },
     y: {
+      stacked: true,
       ticks: { color: '#71717a', callback: (v) => v + '%' },
       grid: { color: (c) => (c.tick.value === 100 ? '#f8717188' : '#27272a') },
       suggestedMax: 120,
@@ -170,7 +239,8 @@ const yearTotals = computed(() => {
 
     <div class="mt-4 grid gap-4 lg:grid-cols-[2fr_1fr]">
       <div class="card min-w-0 p-5">
-        <h3 class="mb-3 text-sm font-medium text-zinc-300">Monthly utilization</h3>
+        <h3 class="mb-1 text-sm font-medium text-zinc-300">Monthly utilization by project</h3>
+        <p class="mb-3 text-xs text-zinc-500">Solid bars are Development, faded bars are Testing.</p>
         <div class="relative h-64 w-full">
           <Bar :data="chartData" :options="chartOptions" />
         </div>
