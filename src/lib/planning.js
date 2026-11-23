@@ -1,47 +1,70 @@
 import { addDays, daysInMonth, diffDays, endOfMonthISO, monthKey, parseISO, parseKey, toISO } from './calendar'
 
-export const POOLS = ['dev', 'test']
 const MAX_MONTHS = 120
 const MAX_TAIL_MONTHS = 36
+const EPS = 1e-9
 
 /*
- * All functions take a planning context: { pools, cal }, where `cal` comes from
- * makeCalendar() and knows which individual days are working days.
+ * All functions take a planning context: { pools, members, cal, businessDays }.
+ * - pools: [{ id, name, color, members: [{ id, name, hoursPerDay }] }]
+ * - members: index memberId -> { ...member, poolId }
+ * - cal: makeCalendar() result that knows which individual days are working days
+ * Allocations are stored per activity as alloc['YYYY-MM'] = { [memberId]: multiplier },
+ * where the multiplier is the share of the member's efficient daily hours spent on the activity.
  */
 
-/** Effective hours one person of the pool delivers per working day. */
-export function personDayHours(ctx, poolId) {
-  return ctx.pools[poolId].hoursPerDay
+export const byPool = (ctx, fn = () => 0) => Object.fromEntries(ctx.pools.map((p) => [p.id, fn(p)]))
+
+export const sumValues = (obj) => Object.values(obj || {}).reduce((s, v) => s + (v || 0), 0)
+
+/** Efficient hours per working day of the whole pool. */
+export function poolDayHours(pool) {
+  return pool.members.reduce((s, m) => s + (m.hoursPerDay || 0), 0)
 }
 
-/** Yearly man-hours of the whole pool, limited by its business days per year. */
-export function poolYearHours(ctx, poolId, y) {
-  const pool = ctx.pools[poolId]
-  return pool.count * Math.min(pool.businessDays, ctx.cal.yearCount(y)) * pool.hoursPerDay
+/** Average efficient hours per member per day (falls back to 6 for an empty pool). */
+export function avgMemberHours(pool) {
+  return pool.members.length ? poolDayHours(pool) / pool.members.length : 6
 }
 
-/** Effective hours one person of the pool delivers in a full month. */
-export function personMonthHours(ctx, poolId, y, m) {
-  return ctx.cal.monthCount(y, m) * personDayHours(ctx, poolId)
+/** Yearly man-hours of the pool, limited by the shared business days per year. */
+export function poolYearHours(ctx, pool, y) {
+  return poolDayHours(pool) * Math.min(ctx.businessDays, ctx.cal.yearCount(y))
 }
 
-function lastAllocatedKey(act, fromKey) {
+/** Man-hours the whole pool can deliver in a month. */
+export function poolMonthCapacity(ctx, pool, y, m) {
+  return poolDayHours(pool) * ctx.cal.monthCount(y, m)
+}
+
+/** Members of a pool assigned in a month entry: [{ id, mult, hpd }], plus totals. */
+function poolAssignment(ctx, poolId, entry) {
+  const list = []
+  let people = 0
+  let rate = 0
+  for (const [id, mult] of Object.entries(entry || {})) {
+    const member = ctx.members[id]
+    if (!member || member.poolId !== poolId || !(mult > 0)) continue
+    list.push({ id, mult, hpd: member.hoursPerDay || 0 })
+    people += mult
+    rate += mult * (member.hoursPerDay || 0)
+  }
+  return { list, people, rate }
+}
+
+function lastAllocatedKey(act, ctx, fromKey) {
   let last = null
-  for (const [key, a] of Object.entries(act.alloc || {})) {
+  for (const [key, entry] of Object.entries(act.alloc || {})) {
     if (key < fromKey) continue
-    if ((a.dev || 0) > 0 || (a.test || 0) > 0) {
+    if (Object.entries(entry || {}).some(([id, v]) => v > 0 && ctx.members[id])) {
       if (!last || key > last) last = key
     }
   }
   return last
 }
 
-function emptyMonth(workingDays) {
-  return {
-    workingDays,
-    dev: { people: 0, hours: 0, load: 0 },
-    test: { people: 0, hours: 0, load: 0 },
-  }
+function emptyMonth(ctx, workingDays) {
+  return { workingDays, pools: byPool(ctx, () => ({ people: 0, hours: 0, load: 0 })), members: {} }
 }
 
 function computeFixed(act, ctx) {
@@ -50,7 +73,7 @@ function computeFixed(act, ctx) {
   const s = parseISO(start)
   const e = parseISO(end)
   const months = {}
-  const planned = { dev: 0, test: 0 }
+  const planned = byPool(ctx)
   let workingDays = 0
 
   for (let y = s.y, m = s.m; y * 12 + m <= e.y * 12 + e.m; m === 11 ? (y++, (m = 0)) : m++) {
@@ -59,13 +82,16 @@ function computeFixed(act, ctx) {
     const covered = ctx.cal.countRange(y, m, firstDay, lastDay)
     const monthTotal = ctx.cal.monthCount(y, m)
     const key = monthKey(y, m)
-    const entry = emptyMonth(covered)
+    const entry = emptyMonth(ctx, covered)
     workingDays += covered
-    for (const p of POOLS) {
-      const people = act.alloc?.[key]?.[p] || 0
-      const hours = people * personDayHours(ctx, p) * covered
-      entry[p] = { people, hours, load: monthTotal ? (people * covered) / monthTotal : 0 }
-      planned[p] += hours
+    for (const pool of ctx.pools) {
+      const { list, people, rate } = poolAssignment(ctx, pool.id, act.alloc?.[key])
+      const hours = rate * covered
+      entry.pools[pool.id] = { people, hours, load: monthTotal ? (people * covered) / monthTotal : 0 }
+      for (const a of list) {
+        entry.members[a.id] = { mult: a.mult, hours: a.mult * a.hpd * covered, load: monthTotal ? (a.mult * covered) / monthTotal : 0 }
+      }
+      planned[pool.id] += hours
     }
     months[key] = entry
   }
@@ -78,7 +104,7 @@ function computeFixed(act, ctx) {
     tailEnd: null,
     planned,
     required: null,
-    missing: { dev: 0, test: 0 },
+    missing: byPool(ctx),
     hint: null,
     months,
     durationDays: diffDays(start, end) + 1,
@@ -90,46 +116,58 @@ function computeEstimate(act, ctx) {
   const start = act.start
   const s = parseISO(start)
   const startKey = monthKey(s.y, s.m)
-  const required = { dev: Math.max(0, act.estimate?.dev || 0), test: Math.max(0, act.estimate?.test || 0) }
+  const required = byPool(ctx, (p) => Math.max(0, act.estimate?.[p.id] || 0))
   const remaining = { ...required }
-  const doneAt = { dev: required.dev <= 0 ? start : null, test: required.test <= 0 ? start : null }
-  const planned = { dev: 0, test: 0 }
+  const doneAt = byPool(ctx, (p) => (required[p.id] <= 0 ? start : null))
+  const allDone = () => Object.values(doneAt).every(Boolean)
+  const planned = byPool(ctx)
   const months = {}
-  const lastKey = lastAllocatedKey(act, startKey) || startKey
+  const lastKey = lastAllocatedKey(act, ctx, startKey) || startKey
   let workingDays = 0
 
   let y = s.y
   let m = s.m
   for (let i = 0; i < MAX_MONTHS; i++) {
     const key = monthKey(y, m)
-    if (key > lastKey || (doneAt.dev && doneAt.test)) break
+    if (key > lastKey || allDone()) break
     const monthTotal = ctx.cal.monthCount(y, m)
     const days = i === 0 ? ctx.cal.monthDays(y, m).filter((d) => d >= s.d) : ctx.cal.monthDays(y, m)
-    const entry = emptyMonth(0)
+    const entry = emptyMonth(ctx, 0)
     let lastUsedDay = 0
 
-    for (const p of POOLS) {
-      const people = act.alloc?.[key]?.[p] || 0
-      entry[p].people = people
-      if (doneAt[p] || !days.length) continue
-      const pdh = personDayHours(ctx, p)
-      const rate = people * pdh
+    for (const pool of ctx.pools) {
+      const p = pool.id
+      const { list, people, rate } = poolAssignment(ctx, p, act.alloc?.[key])
+      entry.pools[p].people = people
+      if (doneAt[p] || !days.length || rate <= 0) {
+        for (const a of list) entry.members[a.id] = { mult: a.mult, hours: 0, load: 0 }
+        continue
+      }
       const avail = rate * days.length
-      if (rate > 0 && avail >= remaining[p] - 1e-9) {
-        const needed = Math.max(1, Math.ceil(remaining[p] / rate - 1e-9))
-        const doneDay = days[needed - 1]
-        doneAt[p] = toISO(y, m, doneDay)
-        entry[p].hours = remaining[p]
-        entry[p].load = remaining[p] / (pdh * monthTotal)
+      // Number of working days the pool works on the activity this month.
+      let usedDays
+      if (avail >= remaining[p] - EPS) {
+        usedDays = remaining[p] / rate
+        const needed = Math.max(1, Math.ceil(usedDays - EPS))
+        doneAt[p] = toISO(y, m, days[needed - 1])
+        entry.pools[p].hours = remaining[p]
         lastUsedDay = Math.max(lastUsedDay, needed)
         remaining[p] = 0
       } else {
-        entry[p].hours = avail
-        entry[p].load = (people * days.length) / monthTotal
+        usedDays = days.length
+        entry.pools[p].hours = avail
         remaining[p] -= avail
         lastUsedDay = days.length
       }
-      planned[p] += entry[p].hours
+      entry.pools[p].load = monthTotal ? (people * usedDays) / monthTotal : 0
+      for (const a of list) {
+        entry.members[a.id] = {
+          mult: a.mult,
+          hours: a.mult * a.hpd * usedDays,
+          load: monthTotal ? (a.mult * usedDays) / monthTotal : 0,
+        }
+      }
+      planned[p] += entry.pools[p].hours
     }
     entry.workingDays = lastUsedDay
     workingDays += lastUsedDay
@@ -137,27 +175,30 @@ function computeEstimate(act, ctx) {
     m === 11 ? (y++, (m = 0)) : m++
   }
 
-  const complete = !!(doneAt.dev && doneAt.test)
-  const missing = { dev: Math.max(0, remaining.dev), test: Math.max(0, remaining.test) }
+  const complete = allDone()
+  const missing = byPool(ctx, (p) => Math.max(0, remaining[p.id]))
   let end
   let tailEnd = null
   let hint = null
 
   if (complete) {
-    end = doneAt.dev > doneAt.test ? doneAt.dev : doneAt.test
+    end = Object.values(doneAt).reduce((a, b) => (b > a ? b : a), start)
   } else {
     const lk = parseKey(lastKey)
     end = endOfMonthISO(lk.y, lk.m)
     const nextY = lk.m === 11 ? lk.y + 1 : lk.y
     const nextM = (lk.m + 1) % 12
+    const nextDays = ctx.cal.monthCount(nextY, nextM) || 21
     let tailMonths = 0
     hint = {}
-    for (const p of POOLS) {
+    for (const pool of ctx.pools) {
+      const p = pool.id
       if (missing[p] <= 0) continue
-      const pmh = personMonthHours(ctx, p, nextY, nextM) || 1
-      const rate = Math.max(1, act.alloc?.[lastKey]?.[p] || 0)
-      tailMonths = Math.max(tailMonths, missing[p] / (rate * pmh))
-      hint[p] = missing[p] / pmh
+      const personMonth = avgMemberHours(pool) * nextDays || 1
+      const lastRate = poolAssignment(ctx, p, act.alloc?.[lastKey]).rate
+      const rateMonth = Math.max(lastRate * nextDays, personMonth)
+      tailMonths = Math.max(tailMonths, missing[p] / rateMonth)
+      hint[p] = missing[p] / personMonth
     }
     tailEnd = addDays(end, Math.round(Math.min(MAX_TAIL_MONTHS, tailMonths) * 30.4))
   }
@@ -182,28 +223,47 @@ export function computeActivity(act, ctx) {
   return act.mode === 'fixed' ? computeFixed(act, ctx) : computeEstimate(act, ctx)
 }
 
-/** Monthly load of both pools for a year, given precomputed activity results. */
-export function poolLoad(ctx, results, year) {
+/** Share of each member's month taken by all activities: { 'YYYY-MM': { memberId: load } }. */
+export function memberLoads(results) {
+  const out = {}
+  for (const r of Object.values(results)) {
+    for (const [key, e] of Object.entries(r.months)) {
+      for (const [id, v] of Object.entries(e.members)) {
+        const row = (out[key] ||= {})
+        row[id] = (row[id] || 0) + v.load
+      }
+    }
+  }
+  return out
+}
+
+export const isOverloaded = (load) => load > 1 + 1e-6
+
+/** Monthly load of every pool for a year, given precomputed activity results and member loads. */
+export function poolLoad(ctx, results, mLoads, year) {
   return Array.from({ length: 12 }, (_, m) => {
     const key = monthKey(year, m)
-    const row = { key, month: m }
-    for (const p of POOLS) {
-      const capacity = ctx.pools[p].count * personMonthHours(ctx, p, year, m)
+    const members = mLoads[key] || {}
+    const row = { key, month: m, members, pools: {} }
+    for (const pool of ctx.pools) {
+      const capacity = poolMonthCapacity(ctx, pool, year, m)
       let hours = 0
       let load = 0
       for (const r of Object.values(results)) {
-        const e = r.months[key]
+        const e = r.months[key]?.pools[pool.id]
         if (!e) continue
-        hours += e[p].hours
-        load += e[p].load
+        hours += e.hours
+        load += e.load
       }
-      row[p] = {
+      const overMembers = pool.members.filter((mem) => isOverloaded(members[mem.id] || 0))
+      row.pools[pool.id] = {
         capacity,
         hours,
         load,
-        count: ctx.pools[p].count,
+        count: pool.members.length,
         utilization: capacity ? hours / capacity : 0,
-        over: load > ctx.pools[p].count + 1e-6,
+        overMembers,
+        over: load > pool.members.length + 1e-6 || overMembers.length > 0,
       }
     }
     return row
@@ -211,32 +271,47 @@ export function poolLoad(ctx, results, year) {
 }
 
 /**
- * Builds a per-month allocation that completes an estimate activity using a constant
- * number of people per pool, or covers the whole span of a fixed activity.
+ * Assigns the given members with one multiplier: every month of a fixed activity's span, or
+ * month by month from the start of an estimated activity until each involved pool's estimate
+ * is covered (other existing assignments are kept and counted).
  */
-export function buildEvenAllocation(act, ctx, perMonth) {
-  const s = parseISO(act.start)
+export function buildEvenAllocation(act, ctx, { memberIds, multiplier }) {
+  const selected = new Set(memberIds.filter((id) => ctx.members[id]))
   const alloc = {}
+  for (const [key, entry] of Object.entries(act.alloc || {})) {
+    const kept = Object.fromEntries(Object.entries(entry).filter(([id]) => !selected.has(id)))
+    if (Object.keys(kept).length) alloc[key] = kept
+  }
+  const mult = Math.max(0, Number(multiplier) || 0)
+  if (!selected.size || !mult) return alloc
+
+  const s = parseISO(act.start)
   if (act.mode === 'fixed') {
     const e = parseISO(act.end || act.start)
     for (let y = s.y, m = s.m; y * 12 + m <= e.y * 12 + e.m; m === 11 ? (y++, (m = 0)) : m++) {
-      alloc[monthKey(y, m)] = { dev: perMonth.dev, test: perMonth.test }
+      const key = monthKey(y, m)
+      alloc[key] = { ...(alloc[key] || {}) }
+      for (const id of selected) alloc[key][id] = mult
     }
     return alloc
   }
-  const remaining = { dev: act.estimate?.dev || 0, test: act.estimate?.test || 0 }
-  const pending = () => POOLS.some((p) => remaining[p] > 1e-9 && perMonth[p] > 0)
+
+  const remaining = byPool(ctx, (p) => Math.max(0, act.estimate?.[p.id] || 0))
+  const selectedPools = new Set([...selected].map((id) => ctx.members[id].poolId))
+  const pending = () => [...selectedPools].some((p) => remaining[p] > EPS)
   let y = s.y
   let m = s.m
   for (let i = 0; i < MAX_MONTHS && pending(); i++) {
+    const key = monthKey(y, m)
     const days = i === 0 ? ctx.cal.countRange(y, m, s.d, 31) : ctx.cal.monthCount(y, m)
-    const entry = { dev: 0, test: 0 }
-    for (const p of POOLS) {
-      if (remaining[p] <= 1e-9 || !perMonth[p]) continue
-      entry[p] = perMonth[p]
-      remaining[p] -= perMonth[p] * personDayHours(ctx, p) * days
+    const entry = { ...(alloc[key] || {}) }
+    for (const id of selected) {
+      if (remaining[ctx.members[id].poolId] > EPS) entry[id] = mult
     }
-    alloc[monthKey(y, m)] = entry
+    for (const pool of ctx.pools) {
+      remaining[pool.id] -= poolAssignment(ctx, pool.id, entry).rate * days
+    }
+    if (Object.keys(entry).length) alloc[key] = entry
     m === 11 ? (y++, (m = 0)) : m++
   }
   return alloc
@@ -245,8 +320,7 @@ export function buildEvenAllocation(act, ctx, perMonth) {
 const BURNDOWN_MAX_POINTS = 180
 
 export function hasBurndown(act, result) {
-  if (act.mode === 'fixed') return result.planned.dev + result.planned.test > 0
-  return result.required.dev + result.required.test > 0
+  return sumValues(act.mode === 'fixed' ? result.planned : result.required) > 0
 }
 
 const weekIndex = (iso) => {
@@ -260,7 +334,7 @@ const weekIndex = (iso) => {
  */
 export function computeBurndown(act, ctx, result) {
   const isFixed = act.mode === 'fixed'
-  const initial = isFixed ? { ...result.planned } : { ...result.required }
+  const initial = { ...(isFixed ? result.planned : result.required) }
   const remaining = { ...initial }
   const s = parseISO(result.start)
   const e = parseISO(result.end)
@@ -268,22 +342,20 @@ export function computeBurndown(act, ctx, result) {
 
   for (let y = s.y, m = s.m; y * 12 + m <= e.y * 12 + e.m; m === 11 ? (y++, (m = 0)) : m++) {
     const key = monthKey(y, m)
+    const rates = byPool(ctx, (p) => poolAssignment(ctx, p.id, act.alloc?.[key]).rate)
     for (const d of ctx.cal.monthDays(y, m)) {
       const iso = toISO(y, m, d)
       if (iso < result.start || iso > result.end) continue
-      for (const p of POOLS) {
-        const burn = (act.alloc?.[key]?.[p] || 0) * personDayHours(ctx, p)
-        remaining[p] = Math.max(0, remaining[p] - burn)
-      }
-      days.push({ date: iso, dev: remaining.dev, test: remaining.test })
+      for (const p of Object.keys(remaining)) remaining[p] = Math.max(0, remaining[p] - (rates[p] || 0))
+      days.push({ date: iso, pools: { ...remaining } })
     }
   }
 
-  const total0 = initial.dev + initial.test
+  const total0 = sumValues(initial)
   const n = days.length
-  const all = [{ date: result.start, dev: initial.dev, test: initial.test }, ...days].map((p, i) => ({
+  const all = [{ date: result.start, pools: { ...initial } }, ...days].map((p, i) => ({
     ...p,
-    total: p.dev + p.test,
+    total: sumValues(p.pools),
     ideal: n ? total0 * (1 - i / n) : 0,
   }))
 
@@ -292,14 +364,32 @@ export function computeBurndown(act, ctx, result) {
       ? all.filter((p, i) => i === 0 || i === all.length - 1 || weekIndex(p.date) !== weekIndex(all[i + 1].date))
       : all
 
+  const left = sumValues(remaining)
   return {
     points,
-    initial: { ...initial, total: total0 },
-    leftover: isFixed ? { dev: 0, test: 0 } : { dev: remaining.dev, test: remaining.test },
+    initial: { pools: initial, total: total0 },
+    leftover: isFixed ? byPool(ctx) : remaining,
     workingDays: n,
-    avgPerDay: n ? (total0 - remaining.dev - remaining.test) / n : 0,
+    avgPerDay: n ? (total0 - left) / n : 0,
     sampled: n > BURNDOWN_MAX_POINTS,
   }
+}
+
+/** Non-zero per-pool values joined for display, e.g. "120 h Developer Pool · 40 h Testing Pool". */
+export function describeByPool(pools, values, min = 0.5) {
+  return pools
+    .filter((p) => (values?.[p.id] || 0) > min)
+    .map((p) => `${fmtHours(values[p.id])} h ${p.name}`)
+    .join(' · ')
+}
+
+/** Short avatar label: "Developer 3" -> "D3", "Jane Smith" -> "JS". */
+export function initials(name = '') {
+  const parts = name.trim().split(/\s+/).filter(Boolean)
+  if (!parts.length) return '?'
+  if (parts.length === 1) return parts[0].slice(0, 2).toUpperCase()
+  const last = parts[parts.length - 1]
+  return (parts[0][0] + (/^\d+$/.test(last) ? last : last[0])).toUpperCase()
 }
 
 export function fmtHours(h) {

@@ -15,7 +15,7 @@ import annotationPlugin from 'chartjs-plugin-annotation'
 import { AlertTriangle, CalendarRange, Hourglass, TrendingDown, X } from 'lucide-vue-next'
 import { usePlanner } from '../../stores/planner'
 import { MONTHS, formatDate, parseISO, toISO } from '../../lib/calendar'
-import { computeBurndown, fmtHours, fmtNum, hasBurndown } from '../../lib/planning'
+import { computeBurndown, describeByPool, fmtHours, fmtNum, hasBurndown, sumValues } from '../../lib/planning'
 
 ChartJS.register(LineElement, PointElement, LinearScale, CategoryScale, Tooltip, Legend, Filler, annotationPlugin)
 
@@ -37,7 +37,7 @@ const shortLabel = (iso) => {
 
 const shortfall = computed(() => {
   const l = burndown.value?.leftover
-  return l && l.dev + l.test > 0.5 ? l : null
+  return l && sumValues(l) > 0.5 ? l : null
 })
 
 const todayStatus = computed(() => {
@@ -67,20 +67,15 @@ const chartData = computed(() => {
         pointRadius: 0,
         tension: 0,
       },
-      {
-        label: 'Dev',
-        data: pts.map((p) => p.dev),
-        borderColor: '#818cf8',
-        borderWidth: 1.5,
-        pointRadius: 0,
-      },
-      {
-        label: 'Test',
-        data: pts.map((p) => p.test),
-        borderColor: '#34d399',
-        borderWidth: 1.5,
-        pointRadius: 0,
-      },
+      ...planner.state.pools
+        .filter((pool) => (burndown.value?.initial.pools[pool.id] || 0) > 0)
+        .map((pool) => ({
+          label: pool.name,
+          data: pts.map((p) => p.pools[pool.id] || 0),
+          borderColor: pool.color,
+          borderWidth: 1.5,
+          pointRadius: 0,
+        })),
       {
         label: 'Ideal',
         data: pts.map((p) => p.ideal),
@@ -207,10 +202,7 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKey))
             class="flex items-center gap-2 rounded-lg border border-red-500/30 bg-red-500/10 px-3 py-2 text-sm text-red-200"
           >
             <AlertTriangle class="size-4 shrink-0" />
-            Missing
-            <template v-if="shortfall.dev > 0.5">{{ fmtHours(shortfall.dev) }} h dev</template>
-            <template v-if="shortfall.dev > 0.5 && shortfall.test > 0.5"> / </template>
-            <template v-if="shortfall.test > 0.5">{{ fmtHours(shortfall.test) }} h test</template>
+            Missing {{ describeByPool(planner.state.pools, shortfall) }}
             after {{ formatDate(result.end) }}. Assign more people to finish the activity.
           </div>
 
@@ -224,7 +216,7 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKey))
               <dt class="text-xs text-zinc-500">{{ act.mode === 'fixed' ? 'Planned hours' : 'Estimate' }}</dt>
               <dd class="text-lg font-semibold text-zinc-100">{{ fmtHours(burndown.initial.total) }} h</dd>
               <dd class="text-[11px] text-zinc-500">
-                {{ fmtHours(burndown.initial.dev) }} dev · {{ fmtHours(burndown.initial.test) }} test
+                {{ describeByPool(planner.state.pools, burndown.initial.pools) }}
               </dd>
             </div>
             <div class="card px-4 py-3">

@@ -3,7 +3,7 @@ import { computed, onBeforeUnmount, ref } from 'vue'
 import { ChevronLeft, ChevronRight } from 'lucide-vue-next'
 import { usePlanner } from '../../stores/planner'
 import { MONTH_W, addDays, dateEndToX, dateToX, formatDate } from '../../lib/calendar'
-import { fmtHours } from '../../lib/planning'
+import { describeByPool, fmtHours, sumValues } from '../../lib/planning'
 
 const props = defineProps({
   activity: { type: Object, required: true },
@@ -62,19 +62,21 @@ const geom = computed(() => {
 const label = computed(() => {
   const r = props.result
   if (r.mode === 'estimate') {
-    const planned = r.planned.dev + r.planned.test
-    const required = r.required.dev + r.required.test
-    return `${fmtHours(planned)} / ${fmtHours(required)} h`
+    return `${fmtHours(sumValues(r.planned))} / ${fmtHours(sumValues(r.required))} h`
   }
-  return `${fmtHours(r.planned.dev)} h dev · ${fmtHours(r.planned.test)} h test`
+  return `${fmtHours(sumValues(r.planned))} h`
 })
 
 const tooltip = computed(() => {
   const r = props.result
   const lines = [props.activity.name, `${formatDate(r.start)} → ${formatDate(r.end)} (${r.workingDays} working of ${r.durationDays} days)`]
-  lines.push(`Dev: ${fmtHours(r.planned.dev)} h${r.required ? ` of ${fmtHours(r.required.dev)} h` : ''}`)
-  lines.push(`Test: ${fmtHours(r.planned.test)} h${r.required ? ` of ${fmtHours(r.required.test)} h` : ''}`)
-  if (!r.complete) lines.push(`Missing: ${fmtHours(r.missing.dev)} h dev, ${fmtHours(r.missing.test)} h test`)
+  for (const pool of planner.state.pools) {
+    const planned = r.planned[pool.id] || 0
+    const required = r.required?.[pool.id] || 0
+    if (planned < 0.5 && required < 0.5) continue
+    lines.push(`${pool.name}: ${fmtHours(planned)} h${r.required ? ` of ${fmtHours(required)} h` : ''}`)
+  }
+  if (!r.complete) lines.push(`Missing: ${describeByPool(planner.state.pools, r.missing)}`)
   lines.push('Drag to move · click to edit')
   return lines.join('\n')
 })
@@ -162,10 +164,7 @@ onBeforeUnmount(() => {
     :style="{ left: geom.tailLeft + 'px', width: geom.tailWidth + 'px', transform: drag ? `translateY(${drag.dy}px)` : undefined }"
   >
     <span class="truncate rounded bg-zinc-950/80 px-1.5 ml-1">
-      missing
-      <template v-if="result.missing.dev">{{ fmtHours(result.missing.dev) }} h dev</template>
-      <template v-if="result.missing.dev && result.missing.test"> · </template>
-      <template v-if="result.missing.test">{{ fmtHours(result.missing.test) }} h test</template>
+      missing {{ describeByPool(planner.state.pools, result.missing) }}
     </span>
   </div>
 </template>
