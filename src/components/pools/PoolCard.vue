@@ -2,9 +2,9 @@
 import { computed, ref } from 'vue'
 import { Trash2, UserRoundPlus, X } from 'lucide-vue-next'
 import { usePlanner } from '../../stores/planner'
-import { fmtHours, fmtNum, initials, isOverloaded, poolDayHours, poolYearHours } from '../../lib/planning'
+import { fmtHours, fmtNum, initials, isOverloaded, peakDailyShare, poolDayHours, poolYearHours } from '../../lib/planning'
 import { dragPayload, endDrag, readDrop, startDrag } from '../../lib/dnd'
-import { MONTHS } from '../../lib/calendar'
+import { MONTHS, formatDate } from '../../lib/calendar'
 
 const props = defineProps({ pool: { type: Object, required: true } })
 
@@ -65,13 +65,25 @@ function onDragOver(e) {
 function onDrop(e) {
   hot.value = false
   const p = readDrop(e)
-  if (p?.type === 'alloc' && p.poolId === props.pool.id) planner.setAlloc(p.activityId, p.key, p.memberId, 0)
+  if (p?.type === 'alloc' && p.poolId === props.pool.id) planner.removeAssignment(p.activityId, p.asgId)
 }
 
+/** Highest share of 1 FTE booked on a single working day of the selected year. */
+const dayPeak = computed(() => peakDailyShare(planner.ctx, planner.memberDaily, planner.year))
+
 function peakTitle(member) {
+  const d = dayPeak.value[member.id]
   const p = memberPeak.value[member.id]
-  if (p.month === null) return `${member.name} is not assigned in ${planner.year}`
-  return `Peak ${fmtNum(p.load * 100, 0)}% of the month in ${MONTHS[p.month]} ${planner.year}`
+  if (!d?.date) return `${member.name} is not assigned in ${planner.year}`
+  const lines = [
+    `Peak ${fmtNum(d.share * 100, 0)}% of 1 FTE (${member.hoursPerDay} h/day) on ${formatDate(d.date)}`,
+    `Busiest month: ${fmtNum(p.load * 100, 0)}% in ${MONTHS[p.month]} ${planner.year}`,
+  ]
+  for (const o of planner.overloadsFor(member.id, { from: `${planner.year}-01-01`, to: `${planner.year}-12-31` })) {
+    const period = o.from === o.to ? formatDate(o.from) : `${formatDate(o.from)} – ${formatDate(o.to)}`
+    lines.push(`⚠ Over 1 FTE ${period} (${fmtNum(o.peakShare * 100, 0)}%): ${o.activityIds.map((id) => planner.getActivity(id)?.name).join(', ')}`)
+  }
+  return lines.join('\n')
 }
 </script>
 
@@ -146,9 +158,9 @@ function peakTitle(member) {
         />
         <span
           class="text-right text-xs"
-          :class="isOverloaded(memberPeak[m.id].load) ? 'font-semibold text-red-400' : 'text-zinc-400'"
+          :class="isOverloaded(dayPeak[m.id]?.share || 0) ? 'font-semibold text-red-400' : 'text-zinc-400'"
           :title="peakTitle(m)"
-          >{{ memberPeak[m.id].month === null ? '—' : fmtNum(memberPeak[m.id].load * 100, 0) + '%' }}</span
+          >{{ dayPeak[m.id]?.date ? fmtNum(dayPeak[m.id].share * 100, 0) + '%' : '—' }}</span
         >
         <button class="text-zinc-600 hover:text-red-400" title="Remove" @click="removeMember(m)"><X class="size-4" /></button>
       </div>

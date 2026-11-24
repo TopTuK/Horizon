@@ -43,7 +43,7 @@ function onDrop(e) {
     const m = Math.min(11, Math.max(0, Math.floor(x / MONTH_W)))
     if (!isMonthEditable(props.activity, planner.year, m)) return
     const key = monthKey(planner.year, m)
-    if (!planner.getAlloc(props.activity.id, key, p.memberId)) planner.setAlloc(props.activity.id, key, p.memberId, 1)
+    planner.assignFromMonth(props.activity.id, key, p.memberId)
     planner.expanded[props.activity.id] = true
   }
 }

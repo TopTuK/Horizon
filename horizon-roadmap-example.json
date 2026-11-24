@@ -1,0 +1,477 @@
+{
+  "version": 3,
+  "businessDays": 221,
+  "pools": [
+    {
+      "id": "dev",
+      "name": "Developer Pool",
+      "role": "Developer",
+      "color": "#818cf8",
+      "members": [
+        {
+          "id": "cvmn8wt1",
+          "name": "Yuliya Bolgarina",
+          "hoursPerDay": 6
+        },
+        {
+          "id": "zdquc7rb",
+          "name": "Zoltan Shtaut",
+          "hoursPerDay": 4
+        },
+        {
+          "id": "ukc8hhru",
+          "name": "Roman Bolshakov",
+          "hoursPerDay": 6
+        },
+        {
+          "id": "0outtfgr",
+          "name": "Vladislav Podverbny",
+          "hoursPerDay": 6
+        },
+        {
+          "id": "3symca4a",
+          "name": "Sergey A. Rusakov",
+          "hoursPerDay": 6
+        },
+        {
+          "id": "vjhs8owk",
+          "name": "Denis Snegirev",
+          "hoursPerDay": 6
+        },
+        {
+          "id": "be5l7nzs",
+          "name": "Sergey Petrov",
+          "hoursPerDay": 5
+        },
+        {
+          "id": "nrj4rebt",
+          "name": "Dmitry Zabolotnikov",
+          "hoursPerDay": 6
+        }
+      ]
+    },
+    {
+      "id": "test",
+      "name": "Testing Pool",
+      "role": "Tester",
+      "color": "#34d399",
+      "members": [
+        {
+          "id": "y5xpda3m",
+          "name": "Alexandra Vener",
+          "hoursPerDay": 6
+        },
+        {
+          "id": "7tw6ek12",
+          "name": "Elena Danilina",
+          "hoursPerDay": 6
+        },
+        {
+          "id": "kn6t97rq",
+          "name": "Evgeny Morozov",
+          "hoursPerDay": 6
+        },
+        {
+          "id": "20x28j06",
+          "name": "Vyacheslav Presnyakov",
+          "hoursPerDay": 6
+        }
+      ]
+    }
+  ],
+  "dayOverrides": {
+    "2027-01-01": false,
+    "2027-01-04": false,
+    "2027-01-05": false,
+    "2027-01-06": false,
+    "2027-01-07": false,
+    "2027-01-08": false,
+    "2027-02-22": false,
+    "2027-02-23": false,
+    "2027-02-20": true,
+    "2027-03-08": false,
+    "2027-05-03": false,
+    "2027-05-10": false,
+    "2027-06-14": false,
+    "2027-11-04": false,
+    "2027-11-05": false,
+    "2027-12-31": false,
+    "2027-06-25": false
+  },
+  "selectedYear": 2027,
+  "swimlanes": [
+    {
+      "id": "1s7utxbr",
+      "name": "SUPPORT",
+      "color": "#34d399",
+      "collapsed": true
+    },
+    {
+      "id": "y794a9vi",
+      "name": "KNIS",
+      "color": "#818cf8",
+      "collapsed": true
+    },
+    {
+      "id": "5vhr27ws",
+      "name": "Next365",
+      "color": "#f472b6",
+      "collapsed": true
+    },
+    {
+      "id": "fpw1a9yn",
+      "name": "KSE9.7 Patch",
+      "color": "#fbbf24",
+      "collapsed": true
+    },
+    {
+      "id": "a9n9690a",
+      "name": "KSE9.8",
+      "color": "#a78bfa",
+      "collapsed": true
+    }
+  ],
+  "activities": [
+    {
+      "id": "6582fsri",
+      "laneId": "y794a9vi",
+      "name": "Поддержка KNIS",
+      "mode": "fixed",
+      "start": "2027-01-01",
+      "end": "2027-12-31",
+      "estimate": {
+        "dev": 480,
+        "test": 120
+      },
+      "alloc": {
+        "2027-01": {
+          "cvmn8wt1": 1
+        },
+        "2027-02": {
+          "cvmn8wt1": 1
+        },
+        "2027-03": {
+          "cvmn8wt1": 1
+        },
+        "2027-04": {
+          "cvmn8wt1": 1
+        },
+        "2027-05": {
+          "cvmn8wt1": 1
+        },
+        "2027-06": {
+          "cvmn8wt1": 1
+        },
+        "2027-07": {
+          "cvmn8wt1": 1
+        },
+        "2027-08": {
+          "cvmn8wt1": 1
+        },
+        "2027-09": {
+          "cvmn8wt1": 1
+        },
+        "2027-10": {
+          "cvmn8wt1": 1
+        },
+        "2027-11": {
+          "cvmn8wt1": 1
+        },
+        "2027-12": {
+          "cvmn8wt1": 1
+        }
+      }
+    },
+    {
+      "id": "vsplwyft",
+      "laneId": "5vhr27ws",
+      "name": "Интеграция KS365 в Next",
+      "mode": "fixed",
+      "start": "2027-01-01",
+      "end": "2027-04-29",
+      "estimate": {
+        "dev": 480,
+        "test": 120
+      },
+      "alloc": {
+        "2027-01": {
+          "vjhs8owk": 1,
+          "3symca4a": 1,
+          "y5xpda3m": 1,
+          "7tw6ek12": 1,
+          "kn6t97rq": 0.5,
+          "ukc8hhru": 1,
+          "be5l7nzs": 1,
+          "0outtfgr": 0.7000000000000001,
+          "zdquc7rb": 0.2,
+          "nrj4rebt": 0.5
+        },
+        "2027-02": {
+          "vjhs8owk": 1,
+          "3symca4a": 1,
+          "y5xpda3m": 1,
+          "7tw6ek12": 1,
+          "kn6t97rq": 0.5,
+          "ukc8hhru": 1,
+          "be5l7nzs": 1,
+          "0outtfgr": 0.7000000000000001,
+          "zdquc7rb": 0.2,
+          "nrj4rebt": 0.5
+        },
+        "2027-03": {
+          "vjhs8owk": 1,
+          "3symca4a": 1,
+          "y5xpda3m": 1,
+          "7tw6ek12": 1,
+          "kn6t97rq": 0.5,
+          "ukc8hhru": 1,
+          "be5l7nzs": 1,
+          "0outtfgr": 0.7000000000000001,
+          "zdquc7rb": 0.2,
+          "nrj4rebt": 0.5
+        },
+        "2027-04": {
+          "vjhs8owk": 1,
+          "3symca4a": 1,
+          "y5xpda3m": 1,
+          "7tw6ek12": 1,
+          "kn6t97rq": 0.5,
+          "ukc8hhru": 1,
+          "be5l7nzs": 1,
+          "0outtfgr": 0.7000000000000001,
+          "zdquc7rb": 0.2,
+          "nrj4rebt": 0.5
+        }
+      }
+    },
+    {
+      "id": "50bfx9pu",
+      "laneId": "1s7utxbr",
+      "name": "SUPPORT 365+KSE",
+      "mode": "fixed",
+      "start": "2027-01-01",
+      "end": "2027-12-31",
+      "estimate": {
+        "dev": 480,
+        "test": 120
+      },
+      "alloc": {
+        "2027-01": {
+          "zdquc7rb": 0.8,
+          "0outtfgr": 0.30000000000000004,
+          "kn6t97rq": 0.5,
+          "20x28j06": 1,
+          "nrj4rebt": 0.5
+        },
+        "2027-02": {
+          "zdquc7rb": 0.8,
+          "0outtfgr": 0.30000000000000004,
+          "kn6t97rq": 0.5,
+          "20x28j06": 1,
+          "nrj4rebt": 0.5
+        },
+        "2027-03": {
+          "zdquc7rb": 0.8,
+          "0outtfgr": 0.30000000000000004,
+          "kn6t97rq": 0.5,
+          "20x28j06": 1,
+          "nrj4rebt": 0.5
+        },
+        "2027-04": {
+          "zdquc7rb": 0.8,
+          "0outtfgr": 0.30000000000000004,
+          "kn6t97rq": 0.5,
+          "20x28j06": 1,
+          "nrj4rebt": 0.5
+        }
+      }
+    },
+    {
+      "id": "k1swb8kp",
+      "laneId": "fpw1a9yn",
+      "name": "Реализация BRQ (Dev)",
+      "mode": "estimate",
+      "start": "2027-05-04",
+      "end": "2027-03-01",
+      "estimate": {
+        "dev": 140,
+        "test": 0
+      },
+      "alloc": {
+        "2027-05": {
+          "3symca4a": 1,
+          "ukc8hhru": 0.5
+        }
+      }
+    },
+    {
+      "id": "5t7ghwdt",
+      "laneId": "fpw1a9yn",
+      "name": "Тестирование BRQ (TEST)",
+      "mode": "estimate",
+      "start": "2027-05-27",
+      "end": "2027-03-01",
+      "estimate": {
+        "dev": 0,
+        "test": 80
+      },
+      "alloc": {
+        "2027-05": {
+          "y5xpda3m": 1,
+          "7tw6ek12": 1
+        },
+        "2027-06": {
+          "7tw6ek12": 0.7000000000000001
+        }
+      }
+    },
+    {
+      "id": "24pma5da",
+      "laneId": "fpw1a9yn",
+      "name": "BVT Тесты (Dev)",
+      "mode": "estimate",
+      "start": "2027-05-27",
+      "end": "2027-03-01",
+      "estimate": {
+        "dev": 60,
+        "test": 0
+      },
+      "alloc": {
+        "2027-05": {
+          "3symca4a": 1,
+          "0outtfgr": 1
+        },
+        "2027-06": {
+          "3symca4a": 1,
+          "0outtfgr": 1
+        }
+      }
+    },
+    {
+      "id": "6cyi5tgb",
+      "laneId": "fpw1a9yn",
+      "name": "Регрессы",
+      "mode": "fixed",
+      "start": "2027-06-04",
+      "end": "2027-06-18",
+      "estimate": {
+        "dev": 480,
+        "test": 120
+      },
+      "alloc": {}
+    },
+    {
+      "id": "vg5u4tno",
+      "laneId": "fpw1a9yn",
+      "name": "Стабилизация и релиз",
+      "mode": "fixed",
+      "start": "2027-06-21",
+      "end": "2027-07-12",
+      "estimate": {
+        "dev": 480,
+        "test": 120
+      },
+      "alloc": {}
+    },
+    {
+      "id": "05ss7t17",
+      "laneId": "fpw1a9yn",
+      "name": "Встройка в ОПВО",
+      "mode": "fixed",
+      "start": "2027-06-21",
+      "end": "2027-06-28",
+      "estimate": {
+        "dev": 480,
+        "test": 120
+      },
+      "alloc": {}
+    },
+    {
+      "id": "aughqon2",
+      "laneId": "a9n9690a",
+      "name": "Исправление Defered багов",
+      "mode": "estimate",
+      "start": "2027-07-12",
+      "end": "2027-03-01",
+      "estimate": {
+        "dev": 432,
+        "test": 170
+      },
+      "alloc": {}
+    },
+    {
+      "id": "9ad6jp5j",
+      "laneId": "a9n9690a",
+      "name": "Реализация BRQ",
+      "mode": "estimate",
+      "start": "2027-07-12",
+      "end": "2027-03-01",
+      "estimate": {
+        "dev": 2724,
+        "test": 1352
+      },
+      "alloc": {}
+    },
+    {
+      "id": "wu2nyq4b",
+      "laneId": "5vhr27ws",
+      "name": "XDRO Response",
+      "mode": "estimate",
+      "start": "2027-06-16",
+      "end": "2027-03-01",
+      "estimate": {
+        "dev": 200,
+        "test": 90
+      },
+      "alloc": {
+        "2027-06": {
+          "ukc8hhru": 0.5,
+          "vjhs8owk": 1,
+          "y5xpda3m": 1,
+          "7tw6ek12": 1
+        },
+        "2027-07": {
+          "ukc8hhru": 0.5,
+          "vjhs8owk": 1
+        }
+      }
+    },
+    {
+      "id": "4133l1ci",
+      "laneId": "1s7utxbr",
+      "name": "MBO 2027",
+      "mode": "fixed",
+      "start": "2027-01-01",
+      "end": "2027-12-31",
+      "estimate": {
+        "dev": 480,
+        "test": 120
+      },
+      "alloc": {}
+    },
+    {
+      "id": "2twu4m78",
+      "laneId": "5vhr27ws",
+      "name": "XDRO Alerts",
+      "mode": "estimate",
+      "start": "2027-05-01",
+      "end": "2027-03-01",
+      "estimate": {
+        "dev": 256,
+        "test": 96
+      },
+      "alloc": {
+        "2027-05": {
+          "vjhs8owk": 1,
+          "ukc8hhru": 0.5
+        },
+        "2027-06": {
+          "ukc8hhru": 0.5,
+          "vjhs8owk": 1,
+          "y5xpda3m": 1,
+          "7tw6ek12": 1
+        }
+      }
+    }
+  ]
+}

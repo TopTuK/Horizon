@@ -1,59 +1,58 @@
 <script setup>
-import { computed, reactive, watch } from 'vue'
-import { AlertTriangle, CalendarRange, CheckCircle2, Copy, Hourglass, Trash2, TrendingDown, Wand2, X } from 'lucide-vue-next'
+import { computed, reactive, ref, watch } from 'vue'
+import { AlertTriangle, CalendarRange, CheckCircle2, Hourglass, Scissors, Trash2, TrendingDown, Wand2, X } from 'lucide-vue-next'
 import { usePlanner } from '../../stores/planner'
-import { MONTHS, addMonthsKey, formatDate, monthKey, parseISO, parseKey } from '../../lib/calendar'
-import { fmtHours, fmtNum, hasBurndown, isOverloaded } from '../../lib/planning'
-import { isMonthEditable } from './editable'
+import { formatDate } from '../../lib/calendar'
+import { assignmentSpan, fmtHours, fmtNum, hasBurndown } from '../../lib/planning'
 
 const planner = usePlanner()
 const act = computed(() => planner.editing)
 const result = computed(() => act.value && planner.results[act.value.id])
-const fill = reactive({ members: [], multiplier: 1 })
+const fill = reactive({ members: [], percent: 100 })
+const dateNote = ref('')
 
 watch(
   () => act.value?.id,
   () => {
     fill.members = []
-    fill.multiplier = 1
+    fill.percent = 100
+    dateNote.value = ''
   },
 )
 
 const pools = computed(() => planner.state.pools)
+const poolOf = (memberId) => pools.value.find((p) => p.id === planner.members[memberId]?.poolId)
 
-/** Months shown in the allocation table: the activity span plus a few months of headroom. */
-const monthRows = computed(() => {
+const pctLabel = (share) => `${fmtNum(share * 100, 0)}%`
+const periodLabel = (o) => (o.from === o.to ? formatDate(o.from) : `${formatDate(o.from)} – ${formatDate(o.to)}`)
+
+/** Assignment rows with their effective dates, booked hours and over-1-FTE periods. */
+const rows = computed(() => {
   if (!act.value) return []
-  const s = parseISO(act.value.start)
-  const first = monthKey(s.y, s.m)
-  const e = parseISO(result.value.mode === 'fixed' ? act.value.end : result.value.tailEnd || result.value.end)
-  let last = monthKey(e.y, e.m)
-  if (result.value.mode === 'estimate') last = addMonthsKey(last, 2)
-  const rows = []
-  for (let k = first; k <= last && rows.length < 120; k = addMonthsKey(k, 1)) {
-    const { y, m } = parseKey(k)
-    const alloc = act.value.alloc[k] || {}
-    const used = result.value.months[k]
-    const loads = planner.memberLoad[k] || {}
-    const assigned = []
-    const free = []
-    for (const pool of pools.value) {
-      for (const mem of pool.members) {
-        if (alloc[mem.id] > 0) {
-          assigned.push({
-            ...mem,
-            pool,
-            mult: alloc[mem.id],
-            hours: used?.members[mem.id]?.hours || 0,
-            totalLoad: loads[mem.id] || 0,
-          })
-        } else free.push({ ...mem, pool })
+  const r = result.value
+  return act.value.assignments
+    .filter((x) => planner.members[x.memberId])
+    .map((x) => {
+      const member = planner.members[x.memberId]
+      const span = assignmentSpan(act.value, x)
+      const until = span.to || r.end
+      const days = until >= span.from ? [...planner.cal.workingDaysBetween(span.from, until)] : []
+      return {
+        ...x,
+        member,
+        pool: poolOf(x.memberId),
+        span,
+        openEnd: !x.to && act.value.mode === 'estimate',
+        hours: r.byAssignment[x.id] || 0,
+        perDay: x.share * (member.hoursPerDay || 0),
+        splitAt: days.length >= 2 ? days[Math.floor(days.length / 2)] : null,
+        over: planner.overloadsFor(x.memberId, { activityId: act.value.id, from: span.from, to: until }),
       }
-    }
-    rows.push({ key: k, label: `${MONTHS[m]} ${y}`, used, assigned, free, editable: isMonthEditable(act.value, y, m), first: k === first })
-  }
-  return rows
+    })
+    .sort((a, b) => a.member.name.localeCompare(b.member.name) || (a.span.from < b.span.from ? -1 : 1))
 })
+
+const overCount = computed(() => new Set(rows.value.filter((r) => r.over.length).map((r) => r.memberId)).size)
 
 function setEstimate(poolId, raw) {
   const v = Math.max(0, Number(raw) || 0)
@@ -72,8 +71,28 @@ function toggleFillPool(pool) {
   fill.members = all ? fill.members.filter((id) => !ids.includes(id)) : [...new Set([...fill.members, ...ids])]
 }
 
-function assign(row, memberId) {
-  if (memberId) planner.setAlloc(act.value.id, row.key, memberId, 1)
+function setDate(edge, value) {
+  if (!value) return
+  if (edge === 'start') planner.moveActivity(act.value.id, value)
+  else planner.resizeActivity(act.value.id, 'end', value)
+  const actual = edge === 'start' ? act.value.start : act.value.end
+  dateNote.value = actual !== value ? `${formatDate(value)} is not a working day — moved to ${formatDate(actual)}.` : ''
+}
+
+function setAsgDate(row, edge, value) {
+  planner.updateAssignment(act.value.id, row.id, { [edge]: value || null })
+}
+
+function toggleOpenEnd(row, open) {
+  planner.updateAssignment(act.value.id, row.id, { to: open ? null : result.value.end })
+}
+
+function assign(memberId) {
+  if (memberId) planner.addAssignment(act.value.id, { memberId, share: 1 })
+}
+
+function fillEvenly() {
+  planner.assignEvenly(act.value.id, { memberIds: [...fill.members], share: (Number(fill.percent) || 0) / 100 })
 }
 
 function remove() {
@@ -90,7 +109,7 @@ function remove() {
   >
     <aside
       v-if="act"
-      class="fixed inset-y-0 right-0 z-50 flex w-[480px] flex-col border-l border-zinc-800 bg-zinc-950/95 shadow-2xl shadow-black backdrop-blur"
+      class="fixed inset-y-0 right-0 z-50 flex w-[560px] max-w-full flex-col border-l border-zinc-800 bg-zinc-950/95 shadow-2xl shadow-black backdrop-blur"
     >
       <header class="flex items-center gap-3 border-b border-zinc-800 px-5 py-4">
         <component :is="act.mode === 'fixed' ? CalendarRange : Hourglass" class="size-5 text-indigo-300" />
@@ -129,21 +148,16 @@ function remove() {
 
           <label class="flex flex-col gap-1 text-xs text-zinc-500">
             Start date
-            <input
-              class="field"
-              type="date"
-              :value="act.start"
-              @change="$event.target.value && planner.moveActivity(act.id, $event.target.value)"
-            />
+            <input class="field" type="date" :value="act.start" @change="setDate('start', $event.target.value)" />
           </label>
           <label v-if="act.mode === 'fixed'" class="flex flex-col gap-1 text-xs text-zinc-500">
-            End date
+            End date (working day)
             <input
               class="field"
               type="date"
               :value="act.end"
               :min="act.start"
-              @change="$event.target.value && planner.resizeActivity(act.id, 'end', $event.target.value)"
+              @change="setDate('end', $event.target.value)"
             />
           </label>
           <div v-else class="flex flex-col gap-1 text-xs text-zinc-500">
@@ -152,6 +166,7 @@ function remove() {
               {{ result.complete ? formatDate(result.end) : 'Not enough resources' }}
             </div>
           </div>
+          <p v-if="dateNote" class="col-span-2 text-[11px] text-amber-300">{{ dateNote }}</p>
 
           <template v-if="act.mode === 'estimate'">
             <label v-for="pool in pools" :key="pool.id" class="flex flex-col gap-1 text-xs text-zinc-500">
@@ -235,87 +250,126 @@ function remove() {
           </div>
           <div class="flex items-end gap-2">
             <label class="flex flex-col gap-1 text-xs text-zinc-500">
-              Multiplier
-              <input v-model.number="fill.multiplier" class="field w-20" type="number" step="0.1" min="0" />
+              Quota, % FTE
+              <input v-model.number="fill.percent" class="field w-24" type="number" step="5" min="5" />
             </label>
             <button
               class="btn"
               :disabled="!fill.members.length"
               :class="!fill.members.length && 'opacity-50'"
-              @click="planner.fillEvenly(act.id, { memberIds: [...fill.members], multiplier: fill.multiplier })"
+              @click="fillEvenly"
             >
-              <Wand2 class="size-4" /> {{ act.mode === 'estimate' ? 'Fill until done' : 'Fill range' }}
+              <Wand2 class="size-4" /> {{ act.mode === 'estimate' ? 'Assign until done' : 'Assign whole range' }}
             </button>
-            <button class="btn" @click="planner.clearAlloc(act.id)">Clear all</button>
+            <button class="btn" @click="planner.clearAssignments(act.id)">Clear all</button>
           </div>
           <p class="text-[11px] text-zinc-600">
-            Multiplier is the share of a person's efficient hours per day: 1 = full time, 0.5 = half of the day.
+            Quota is the share of a person's efficient hours per day (1 FTE) spent on this activity: 100% = full time,
+            50% = half of the day. A person can work on several activities in parallel; the quotas on any day should not
+            add up to more than 100%.
           </p>
         </div>
 
-        <!-- Monthly assignments -->
+        <!-- Assignments -->
         <div class="space-y-2">
-          <div class="text-xs font-medium uppercase tracking-wider text-zinc-500">Monthly assignments</div>
+          <div class="flex items-center gap-2">
+            <span class="text-xs font-medium uppercase tracking-wider text-zinc-500">Assignments</span>
+            <span v-if="overCount" class="flex items-center gap-1 text-[11px] text-red-400">
+              <AlertTriangle class="size-3.5" /> {{ overCount }} {{ overCount === 1 ? 'person is' : 'people are' }} over 1 FTE
+            </span>
+          </div>
           <div class="overflow-hidden rounded-lg border border-zinc-800">
             <div
-              v-for="row in monthRows"
-              :key="row.key"
-              class="space-y-1 border-t border-zinc-900 px-3 py-2 first:border-t-0"
-              :class="!row.used && !row.assigned.length && 'opacity-60'"
+              class="grid grid-cols-[1fr_64px_112px_112px_44px_36px] items-center gap-1.5 bg-zinc-900 px-3 py-1.5 text-[10px] text-zinc-500"
             >
-              <div class="flex items-center gap-2">
-                <span class="text-xs font-medium text-zinc-300">{{ row.label }}</span>
-                <span class="flex flex-wrap gap-x-2 text-[11px]">
-                  <template v-for="pool in pools" :key="pool.id">
-                    <span v-if="row.used?.pools[pool.id]?.hours" :style="{ color: pool.color }">
-                      {{ fmtHours(row.used.pools[pool.id].hours) }} h
+              <span>Person</span>
+              <span>% FTE</span>
+              <span>From</span>
+              <span>To</span>
+              <span class="text-right">Hours</span>
+              <span />
+            </div>
+            <div v-for="row in rows" :key="row.id" class="space-y-1 border-t border-zinc-900 px-3 py-1.5">
+              <div class="grid grid-cols-[1fr_64px_112px_112px_44px_36px] items-center gap-1.5 text-xs">
+                <span class="flex min-w-0 items-center gap-1.5">
+                  <span class="size-2 shrink-0 rounded-full" :style="{ background: row.pool?.color }" />
+                  <span class="truncate text-zinc-300" :title="`${row.member.name} · ${row.pool?.name} · ${row.member.hoursPerDay} h/day = 1 FTE`">
+                    {{ row.member.name }}
+                  </span>
+                </span>
+                <input
+                  class="field !px-1 !py-0 text-center text-xs"
+                  type="number"
+                  step="5"
+                  min="5"
+                  :value="Math.round(row.share * 100)"
+                  :title="`${fmtNum(row.perDay, 1)} h/day`"
+                  @change="planner.updateAssignment(act.id, row.id, { share: ($event.target.value || 0) / 100 })"
+                />
+                <input
+                  class="field !px-1 !py-0 text-xs"
+                  type="date"
+                  :min="act.start"
+                  :value="row.span.from"
+                  @change="setAsgDate(row, 'from', $event.target.value)"
+                />
+                <div class="flex min-w-0 items-center gap-1">
+                  <template v-if="row.openEnd">
+                    <span class="flex-1 truncate text-[11px] text-indigo-300" :title="`Until the estimate is covered (${formatDate(result.end)})`">
+                      until done
                     </span>
                   </template>
+                  <input
+                    v-else
+                    class="field min-w-0 flex-1 !px-1 !py-0 text-xs"
+                    type="date"
+                    :min="row.span.from"
+                    :max="act.mode === 'fixed' ? act.end : undefined"
+                    :value="row.span.to"
+                    @change="setAsgDate(row, 'to', $event.target.value)"
+                  />
+                  <input
+                    v-if="act.mode === 'estimate'"
+                    type="checkbox"
+                    class="accent-indigo-500"
+                    title="Until the estimate is covered"
+                    :checked="row.openEnd"
+                    @change="toggleOpenEnd(row, $event.target.checked)"
+                  />
+                </div>
+                <span class="text-right text-[11px] text-zinc-500" :title="`${fmtNum(row.perDay, 1)} h/day`">{{ fmtHours(row.hours) }} h</span>
+                <span class="flex justify-end gap-1">
+                  <button
+                    v-if="row.splitAt"
+                    class="text-zinc-600 hover:text-zinc-200"
+                    :title="`Split the range at ${formatDate(row.splitAt)} to change the quota for the second part`"
+                    @click="planner.splitAssignment(act.id, row.id, row.splitAt)"
+                  >
+                    <Scissors class="size-3.5" />
+                  </button>
+                  <button class="text-zinc-600 hover:text-red-400" title="Unassign" @click="planner.removeAssignment(act.id, row.id)">
+                    <X class="size-3.5" />
+                  </button>
                 </span>
-                <button
-                  v-if="row.editable && !row.first"
-                  class="ml-auto text-zinc-600 hover:text-zinc-200"
-                  title="Copy assignments from the previous month"
-                  @click="planner.copyMonth(act.id, addMonthsKey(row.key, -1), row.key)"
-                >
-                  <Copy class="size-3.5" />
-                </button>
               </div>
-              <div v-for="a in row.assigned" :key="a.id" class="flex items-center gap-2 text-xs">
-                <span class="size-2 shrink-0 rounded-full" :style="{ background: a.pool.color }" />
-                <span class="min-w-0 flex-1 truncate text-zinc-300" :title="a.pool.name">{{ a.name }}</span>
-                <span
-                  v-if="isOverloaded(a.totalLoad)"
-                  class="text-[10px] text-red-400"
-                  :title="`${fmtNum(a.totalLoad * 100, 0)}% of the month across all activities`"
-                  >over {{ fmtNum(a.totalLoad * 100, 0) }}%</span
-                >
-                <span class="text-zinc-500">×</span>
-                <input
-                  class="field w-16 !px-1 !py-0 text-center text-xs"
-                  type="number"
-                  step="0.1"
-                  min="0"
-                  :disabled="!row.editable"
-                  :value="a.mult"
-                  @change="planner.setAlloc(act.id, row.key, a.id, $event.target.value)"
-                />
-                <span class="w-14 text-right text-[11px] text-zinc-500">{{ fmtHours(a.hours) }} h</span>
-                <button class="text-zinc-600 hover:text-red-400" title="Unassign" @click="planner.setAlloc(act.id, row.key, a.id, 0)">
-                  <X class="size-3.5" />
-                </button>
+              <div v-for="o in row.over" :key="o.from" class="flex items-start gap-1 pl-3.5 text-[11px] text-red-400">
+                <AlertTriangle class="mt-0.5 size-3 shrink-0" />
+                <span>
+                  Over 1 FTE {{ periodLabel(o) }} ({{ pctLabel(o.peakShare) }}) with
+                  {{ o.activityIds.filter((id) => id !== act.id).map((id) => planner.getActivity(id)?.name).join(', ') || 'this activity' }}
+                </span>
               </div>
+            </div>
+            <p v-if="!rows.length" class="border-t border-zinc-900 px-3 py-3 text-xs text-zinc-500">Nobody is assigned yet.</p>
+            <div class="border-t border-zinc-900 px-3 py-2">
               <select
-                v-if="row.editable && row.free.length"
                 class="field w-full !py-0.5 text-xs text-zinc-400"
                 :value="''"
-                @change="assign(row, $event.target.value); $event.target.value = ''"
+                @change="assign($event.target.value); $event.target.value = ''"
               >
                 <option value="">+ Assign person…</option>
                 <optgroup v-for="pool in pools" :key="pool.id" :label="pool.name">
-                  <option v-for="m in row.free.filter((f) => f.pool.id === pool.id)" :key="m.id" :value="m.id">
-                    {{ m.name }} ({{ m.hoursPerDay }} h/day)
-                  </option>
+                  <option v-for="m in pool.members" :key="m.id" :value="m.id">{{ m.name }} ({{ m.hoursPerDay }} h/day)</option>
                 </optgroup>
               </select>
             </div>
