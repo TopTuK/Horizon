@@ -3,6 +3,7 @@ import { computed, ref } from 'vue'
 import { useStorage } from '@vueuse/core'
 import { YEARS, addDays, addMonthsKey, diffDays, endOfMonthISO, monthKey, parseKey, toISO } from '../lib/calendar'
 import {
+  activityAllocations,
   assignmentSpan,
   buildAssignments,
   computeActivity,
@@ -209,6 +210,11 @@ export const usePlanner = defineStore('planner', () => {
   const overMonths = computed(() => overloadedByMonth(overloads.value))
 
   const load = computed(() => poolLoad(ctx.value, results.value, memberLoad.value, year.value, overMonths.value))
+
+  /** Monthly load and hours of the selected year, split by activity, for every pool and member. */
+  const allocByActivity = computed(() =>
+    activityAllocations(ctx.value, state.value.swimlanes, state.value.activities, results.value, year.value),
+  )
 
   /** Overload periods of a member, optionally only those involving an activity and/or touching [from, to]. */
   function overloadsFor(memberId, { activityId = null, from = null, to = null } = {}) {
@@ -611,6 +617,7 @@ export const usePlanner = defineStore('planner', () => {
     overloadsFor,
     results,
     load,
+    allocByActivity,
     activitiesByLane,
     editingId,
     editing,

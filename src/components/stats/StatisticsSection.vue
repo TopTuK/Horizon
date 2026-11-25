@@ -6,6 +6,7 @@ import { AlertTriangle } from 'lucide-vue-next'
 import { usePlanner } from '../../stores/planner'
 import { MONTHS, formatDate } from '../../lib/calendar'
 import { avgMemberHours, describeByPool, fmtHours, fmtNum, poolDayHours, poolYearHours } from '../../lib/planning'
+import { withAlpha } from '../../lib/color'
 
 ChartJS.register(BarElement, CategoryScale, LinearScale, Tooltip, Legend)
 
@@ -39,16 +40,6 @@ const poolStats = computed(() =>
     }
   }),
 )
-
-function withAlpha(hex, alpha) {
-  const h = hex.replace('#', '')
-  const full = h.length === 3 ? [...h].map((c) => c + c).join('') : h
-  const n = Number.parseInt(full, 16)
-  const r = (n >> 16) & 255
-  const g = (n >> 8) & 255
-  const b = n & 255
-  return `rgba(${r}, ${g}, ${b}, ${alpha})`
-}
 
 /** Per-project monthly share of each pool. Lanes with no hours this year are omitted. */
 const projectMonths = computed(() => {

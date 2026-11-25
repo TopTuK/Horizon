@@ -4,6 +4,7 @@ import ResourcePool from './components/pools/ResourcePool.vue'
 import GanttChart from './components/gantt/GanttChart.vue'
 import ActivityEditor from './components/gantt/ActivityEditor.vue'
 import StatisticsSection from './components/stats/StatisticsSection.vue'
+import DistributionSection from './components/stats/DistributionSection.vue'
 import WorkingCalendarModal from './components/calendar/WorkingCalendarModal.vue'
 import BurndownModal from './components/gantt/BurndownModal.vue'
 </script>
@@ -15,6 +16,7 @@ import BurndownModal from './components/gantt/BurndownModal.vue'
       <ResourcePool />
       <GanttChart />
       <StatisticsSection />
+      <DistributionSection />
     </main>
     <ActivityEditor />
     <WorkingCalendarModal />

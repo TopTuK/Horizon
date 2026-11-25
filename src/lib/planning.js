@@ -361,6 +361,67 @@ export function poolLoad(ctx, results, mLoads, year, overMonths = {}) {
   })
 }
 
+const SHADE_STEP = 0.12
+const MIN_SHADE = 0.28
+
+/**
+ * Allocations of one year split by activity, for every pool and member: { acts, pools, members }.
+ * `acts` is [{ id, name, laneId, laneName, laneColor, shade }]: the activities that book time in the
+ * year, in stack order (lane order, then start date). `shade` is the opacity an activity takes of its
+ * lane colour, by its position among its lane's activities. `pools` and `members` map ids to
+ * { load: Number[12], hours: Number[12], acts: { activityId: { load, hours } } }, where load is the
+ * FTE share of each month's working days and hours the booked man-hours.
+ */
+export function activityAllocations(ctx, lanes, activities, results, year) {
+  const months = Array.from({ length: 12 }, (_, m) => monthKey(year, m))
+  const series = () => ({ load: Array(12).fill(0), hours: Array(12).fill(0), acts: {} })
+  const cell = (s, id) => (s.acts[id] ||= { load: Array(12).fill(0), hours: Array(12).fill(0) })
+  const laneOrder = new Map(lanes.map((l, i) => [l.id, i]))
+
+  const used = []
+  activities.forEach((a, i) => {
+    const r = results[a.id]
+    if (months.some((key) => Object.keys(r?.months[key]?.members || {}).length)) used.push({ a, i, r })
+  })
+  used.sort(
+    (x, y) =>
+      (laneOrder.get(x.a.laneId) ?? lanes.length) - (laneOrder.get(y.a.laneId) ?? lanes.length) ||
+      (x.a.start < y.a.start ? -1 : x.a.start > y.a.start ? 1 : x.i - y.i),
+  )
+  const usedPerLane = new Map()
+  const acts = used.map(({ a }) => {
+    const lane = lanes.find((l) => l.id === a.laneId)
+    const n = usedPerLane.get(a.laneId) || 0
+    usedPerLane.set(a.laneId, n + 1)
+    return {
+      id: a.id,
+      name: a.name,
+      laneId: a.laneId,
+      laneName: lane?.name || 'No project',
+      laneColor: lane?.color || '#71717a',
+      shade: Math.max(MIN_SHADE, 1 - n * SHADE_STEP),
+    }
+  })
+
+  const pools = {}
+  const members = {}
+  for (const { a, r } of used) {
+    months.forEach((key, m) => {
+      for (const [memberId, e] of Object.entries(r?.months[key]?.members || {})) {
+        const member = ctx.members[memberId]
+        if (!member) continue
+        const pool = (pools[member.poolId] ||= series())
+        const mem = (members[memberId] ||= series())
+        for (const s of [pool, mem, cell(pool, a.id), cell(mem, a.id)]) {
+          s.load[m] += e.load
+          s.hours[m] += e.hours
+        }
+      }
+    })
+  }
+  return { year, acts, pools, members }
+}
+
 const SHARE_STEP = 0.05
 
 /** Nearest 5% step, matching assignment quotas in the planner. */
