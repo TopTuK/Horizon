@@ -1,4 +1,4 @@
-import { addDays, diffDays, monthKey, parseISO } from './calendar'
+import { addDays, diffDays, endOfMonthISO, monthKey, parseISO, parseKey, toISO } from './calendar'
 
 const MAX_YEARS = 10
 const MAX_TAIL_DAYS = 3 * 366
@@ -359,6 +359,259 @@ export function poolLoad(ctx, results, mLoads, year, overMonths = {}) {
     }
     return row
   })
+}
+
+const SHARE_STEP = 0.05
+
+/** Nearest 5% step, matching assignment quotas in the planner. */
+function roundShare(v) {
+  return Math.round((v + 1e-8) / SHARE_STEP) * SHARE_STEP
+}
+
+/** Largest 5% step that does not exceed v. */
+function floorShare(v) {
+  return Math.floor((v + 1e-8) / SHARE_STEP) * SHARE_STEP
+}
+
+/** Last working day this member actually books hours on an activity. */
+function lastBookedDay(result, memberId) {
+  const days = result?.daily?.[memberId]
+  if (!days) return null
+  let last = null
+  for (const iso of Object.keys(days)) {
+    if (days[iso] > EPS && (!last || iso > last)) last = iso
+  }
+  return last
+}
+
+/** Nominal quota of a member on one activity on a given day (assignment spans, not booked hours). */
+function nominalShareOn(act, memberId, iso) {
+  let share = 0
+  for (const a of act.assignments || []) {
+    if (a.memberId !== memberId || !(a.share > 0)) continue
+    const span = assignmentSpan(act, a)
+    if (span.from <= iso && (!span.to || iso <= span.to)) share += a.share
+  }
+  return share
+}
+
+/**
+ * Working-day window of `monthKey` clipped to the activity: not before its start, and not past a
+ * fixed activity's end. Estimated activities may run through the month even past the day the
+ * current assignments would finish.
+ */
+function monthWindow(act, ctx, key) {
+  const { y, m } = parseKey(key)
+  const monthStart = toISO(y, m, 1)
+  const monthEnd = endOfMonthISO(y, m)
+  const days = [...ctx.cal.workingDaysBetween(monthStart, monthEnd)]
+  if (!days.length) return null
+  const lastWorking = days[days.length - 1]
+  let from = days[0]
+  let to = lastWorking
+  if (act.start > to) return null
+  if (act.start > from) from = ctx.cal.nextWorking(act.start)
+  if (act.mode === 'fixed') {
+    if (!act.end || act.end < from) return null
+    if (act.end < to) to = ctx.cal.prevWorking(act.end)
+  }
+  if (to < from) return null
+  return {
+    key,
+    monthStart,
+    monthEnd,
+    lastWorking,
+    from,
+    to,
+    days: days.filter((iso) => iso >= from && iso <= to),
+  }
+}
+
+function memberIntervals(act, memberId) {
+  return (act.assignments || [])
+    .filter((a) => a.memberId === memberId && a.share > 0)
+    .map((a) => {
+      const span = assignmentSpan(act, a)
+      return { id: a.id, memberId, share: a.share, from: span.from, to: span.to }
+    })
+}
+
+/** Cuts every interval so `cut` is the first day of the right piece. */
+function splitIntervals(intervals, cut, cal) {
+  const out = []
+  for (const iv of intervals) {
+    if (iv.from >= cut || (iv.to && iv.to < cut)) {
+      out.push(iv)
+      continue
+    }
+    const leftTo = cal.prevWorking(addDays(cut, -1))
+    if (leftTo >= iv.from) out.push({ ...iv, to: leftTo })
+    out.push({ ...iv, id: uid(), from: cut })
+  }
+  return out
+}
+
+const overlapsWindow = (iv, from, to) => iv.from <= to && (!iv.to || iv.to >= from)
+
+function coalesceIntervals(intervals, cal) {
+  const sorted = [...intervals].sort((a, b) => (a.from < b.from ? -1 : a.from > b.from ? 1 : 0))
+  const out = []
+  for (const iv of sorted) {
+    const prev = out[out.length - 1]
+    const contiguous = prev?.to && cal.nextWorking(addDays(prev.to, 1)) === iv.from
+    if (prev && contiguous && Math.abs(prev.share - iv.share) < 1e-6) prev.to = iv.to
+    else out.push({ ...iv })
+  }
+  return out
+}
+
+/** Contiguous working days with the same quota become one range. A day with no quota breaks the run. */
+function segmentsFromDays(memberId, days, shareOf, cal) {
+  const segs = []
+  let prevDay = null
+  for (const day of days) {
+    const share = shareOf(day) || 0
+    if (!(share > EPS)) {
+      prevDay = null
+      continue
+    }
+    const follows = prevDay && cal.nextWorking(addDays(prevDay, 1)) === day
+    prevDay = day
+    const prev = segs[segs.length - 1]
+    if (prev && follows && Math.abs(prev.share - share) < 1e-6) prev.to = day
+    else segs.push({ id: uid(), memberId, share, from: day, to: day })
+  }
+  return segs
+}
+
+function toStoredAssignment(act, iv) {
+  const from = iv.from > act.start ? iv.from : null
+  let to = iv.to
+  if (to && act.mode === 'fixed' && to >= act.end) to = null
+  return { id: iv.id, memberId: iv.memberId, share: iv.share, from, to }
+}
+
+/**
+ * Plans assignment edits that move quota freed by other activities onto `target` through each
+ * given month's last working day. A person is released when booked work on another activity stops
+ * inside the month, before that month's last working day; the quota moved is the share they still
+ * held on that activity's last day. The add is capped so the nominal total stays at or under 1 FTE,
+ * and ranges outside the month (including a later "until done" tail) are left in place.
+ * Applying the result and planning again yields no changes.
+ * `results` is `{ [activityId]: computeActivity result }`.
+ * Returns `{ assignments, changes }` where `changes` is `{ memberId, from, to, share, month }[]`
+ * and `share` is the quota added, not the resulting total.
+ */
+export function planReleasedAlignment(target, activities, results, ctx, monthKeys) {
+  const current = target.assignments || []
+  const windows = (monthKeys || []).map((key) => monthWindow(target, ctx, key)).filter((w) => w?.days.length)
+  if (!windows.length) return { assignments: current, changes: [] }
+
+  const booked = new Map()
+  const bookedThrough = (act, memberId) => {
+    const key = `${act.id}\0${memberId}`
+    if (booked.has(key)) return booked.get(key)
+    const last = lastBookedDay(results?.[act.id], memberId)
+    booked.set(key, last)
+    return last
+  }
+
+  const others = (activities || []).filter((act) => act.id !== target.id)
+  const memberIds = []
+  const seen = new Set()
+  for (const act of others) {
+    for (const a of act.assignments || []) {
+      if (!ctx.members[a.memberId] || !(a.share > 0) || seen.has(a.memberId)) continue
+      seen.add(a.memberId)
+      memberIds.push(a.memberId)
+    }
+  }
+
+  const otherShareOn = (memberId, day) => {
+    let share = 0
+    for (const act of others) {
+      const end = bookedThrough(act, memberId)
+      if (!end || day > end) continue
+      share += nominalShareOn(act, memberId, day)
+    }
+    return share
+  }
+
+  const endedShareOn = (memberId, day, w) => {
+    let share = 0
+    for (const act of others) {
+      const end = bookedThrough(act, memberId)
+      if (!end || end < w.monthStart || end > w.monthEnd || end >= w.lastWorking || end >= day) continue
+      share += nominalShareOn(act, memberId, end)
+    }
+    return share
+  }
+
+  const dayPlan = new Map()
+  const changes = []
+  for (const memberId of memberIds) {
+    const days = new Map()
+    let touched = false
+    for (const w of windows) {
+      let run = null
+      const flush = () => {
+        if (run) changes.push(run)
+        run = null
+      }
+      for (const day of w.days) {
+        const targetShare = nominalShareOn(target, memberId, day)
+        const otherShare = otherShareOn(memberId, day)
+        const room = Math.max(0, 1 - otherShare - targetShare)
+        const add = floorShare(Math.min(endedShareOn(memberId, day, w), room))
+        let desired = targetShare
+        if (add >= SHARE_STEP - 1e-9) {
+          const cap = targetShare + room
+          desired = roundShare(targetShare + add)
+          if (desired > cap + 1e-6) desired = floorShare(cap)
+          touched = true
+          if (run && Math.abs(run.share - add) < 1e-6 && ctx.cal.nextWorking(addDays(run.to, 1)) === day) run.to = day
+          else {
+            flush()
+            run = { memberId, from: day, to: day, share: add, month: w.key }
+          }
+        } else flush()
+        days.set(day, desired)
+      }
+      flush()
+    }
+    if (touched) dayPlan.set(memberId, days)
+  }
+
+  if (!dayPlan.size) return { assignments: current, changes: [] }
+
+  const rebuilt = new Map()
+  for (const [memberId, days] of dayPlan) {
+    let intervals = memberIntervals(target, memberId)
+    for (const w of windows) {
+      intervals = splitIntervals(intervals, w.from, ctx.cal)
+      intervals = splitIntervals(intervals, ctx.cal.nextWorking(addDays(w.to, 1)), ctx.cal)
+    }
+    for (const w of windows) intervals = intervals.filter((iv) => !overlapsWindow(iv, w.from, w.to))
+    const covered = windows.flatMap((w) => w.days)
+    intervals.push(...segmentsFromDays(memberId, covered, (day) => days.get(day) || 0, ctx.cal))
+    rebuilt.set(memberId, coalesceIntervals(intervals, ctx.cal).map((iv) => toStoredAssignment(target, iv)))
+  }
+
+  const assignments = []
+  const placed = new Set()
+  for (const a of current) {
+    const next = rebuilt.get(a.memberId)
+    if (!next) {
+      assignments.push(a)
+      continue
+    }
+    if (placed.has(a.memberId)) continue
+    placed.add(a.memberId)
+    assignments.push(...next)
+  }
+  for (const [memberId, next] of rebuilt) if (!placed.has(memberId)) assignments.push(...next)
+
+  return { assignments, changes }
 }
 
 /**

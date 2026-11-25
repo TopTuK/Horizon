@@ -1,15 +1,32 @@
 <script setup>
 import { computed, reactive, ref, watch } from 'vue'
-import { AlertTriangle, CalendarRange, CheckCircle2, Hourglass, Scissors, Trash2, TrendingDown, Wand2, X } from 'lucide-vue-next'
+import { AlertTriangle, CalendarRange, CheckCircle2, Hourglass, Scissors, Trash2, TrendingDown, UserPlus, Wand2, X } from 'lucide-vue-next'
 import { usePlanner } from '../../stores/planner'
-import { formatDate } from '../../lib/calendar'
+import { MONTHS, formatDate, monthKey } from '../../lib/calendar'
 import { assignmentSpan, fmtHours, fmtNum, hasBurndown } from '../../lib/planning'
+import { isMonthEditable } from './editable'
 
 const planner = usePlanner()
 const act = computed(() => planner.editing)
 const result = computed(() => act.value && planner.results[act.value.id])
 const fill = reactive({ members: [], percent: 100 })
 const dateNote = ref('')
+const alignKey = ref('')
+const alignNote = ref('')
+const MONTH_FULL = [
+  'January',
+  'February',
+  'March',
+  'April',
+  'May',
+  'June',
+  'July',
+  'August',
+  'September',
+  'October',
+  'November',
+  'December',
+]
 
 watch(
   () => act.value?.id,
@@ -93,6 +110,73 @@ function assign(memberId) {
 
 function fillEvenly() {
   planner.assignEvenly(act.value.id, { memberIds: [...fill.members], share: (Number(fill.percent) || 0) / 100 })
+}
+
+const alignMonths = computed(() => {
+  if (!act.value) return []
+  return MONTHS.map((label, m) => ({ key: monthKey(planner.year, m), label: `${label} ${planner.year}`, m })).filter((x) =>
+    isMonthEditable(act.value, planner.year, x.m),
+  )
+})
+
+function preferredAlignMonth() {
+  const months = alignMonths.value
+  if (!months.length) return 'all'
+  const now = new Date()
+  const key = monthKey(now.getFullYear(), now.getMonth())
+  return months.some((x) => x.key === key) ? key : months[0].key
+}
+
+watch(
+  () => [act.value?.id, planner.year],
+  () => {
+    alignKey.value = preferredAlignMonth()
+    alignNote.value = ''
+  },
+  { immediate: true },
+)
+
+watch(alignKey, () => {
+  alignNote.value = ''
+})
+
+const alignPlan = computed(() => {
+  if (!act.value || !alignKey.value) return { assignments: [], changes: [] }
+  const key = alignKey.value === 'all' ? null : alignKey.value
+  return planner.previewReleased(act.value.id, key)
+})
+
+function describeReleased(changes) {
+  const groups = new Map()
+  for (const c of changes) {
+    const id = `${c.memberId}|${c.month}`
+    const list = groups.get(id) || []
+    list.push(c)
+    groups.set(id, list)
+  }
+  return [...groups.values()]
+    .map((list) => {
+      const name = planner.members[list[0].memberId]?.name || 'Someone'
+      const month = MONTH_FULL[Number(list[0].month.slice(5)) - 1]
+      const bits = list.map((c) => `${fmtNum(c.share * 100, 0)}% from ${formatDate(c.from)} through ${formatDate(c.to)}`)
+      return `${name} finishes other work in ${month}; ${bits.join(', ')}`
+    })
+    .join('. ')
+}
+
+const alignPreview = computed(() =>
+  alignPlan.value.changes.length
+    ? describeReleased(alignPlan.value.changes)
+    : 'Nobody is released before the end of this month.',
+)
+
+function assignReleased() {
+  if (!act.value) return
+  const key = alignKey.value === 'all' ? null : alignKey.value
+  const plan = planner.alignReleased(act.value.id, key)
+  alignNote.value = plan.changes.length
+    ? `Assigned: ${describeReleased(plan.changes)}.`
+    : 'Nobody has free quota to move in this month.'
 }
 
 function remove() {
@@ -268,6 +352,32 @@ function remove() {
             50% = half of the day. A person can work on several activities in parallel; the quotas on any day should not
             add up to more than 100%.
           </p>
+          <div class="space-y-2 border-t border-zinc-800 pt-3">
+            <div class="text-xs font-medium uppercase tracking-wider text-zinc-500">Released people</div>
+            <div class="flex items-end gap-2">
+              <label class="flex min-w-0 flex-1 flex-col gap-1 text-xs text-zinc-500">
+                Month
+                <select v-model="alignKey" class="field">
+                  <option v-for="m in alignMonths" :key="m.key" :value="m.key">{{ m.label }}</option>
+                  <option value="all">Every month in {{ planner.year }}</option>
+                </select>
+              </label>
+              <button
+                class="btn shrink-0"
+                :disabled="!alignPlan.changes.length"
+                :class="!alignPlan.changes.length && 'opacity-50'"
+                @click="assignReleased"
+              >
+                <UserPlus class="size-4" /> Assign released people
+              </button>
+            </div>
+            <p class="text-[11px]" :class="alignNote ? 'text-indigo-300' : 'text-zinc-500'">{{ alignNote || alignPreview }}</p>
+            <p class="text-[11px] text-zinc-600">
+              Adds people whose other activities end during the selected month. Their freed quota is placed here from
+              the next working day through the last working day of the month, then the earlier quota resumes. The total
+              on any day stays at or under 100%.
+            </p>
+          </div>
         </div>
 
         <!-- Assignments -->

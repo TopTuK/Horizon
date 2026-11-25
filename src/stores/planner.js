@@ -10,9 +10,11 @@ import {
   memberDailyLoad,
   memberLoads,
   overloadedByMonth,
+  planReleasedAlignment,
   poolLoad,
   uid,
 } from '../lib/planning'
+import { isMonthEditable } from '../components/gantt/editable'
 import { isDefaultWorking, makeCalendar } from '../lib/workdays'
 
 const STORAGE_KEY = 'horizon-state'
@@ -536,6 +538,37 @@ export const usePlanner = defineStore('planner', () => {
     if (a) a.assignments = []
   }
 
+  /** Month keys the alignment can touch: one chart-year month, or every editable month when `key` is null. */
+  function alignmentMonths(act, key) {
+    if (!act) return []
+    if (key) {
+      const { y, m } = parseKey(key)
+      return y === year.value && isMonthEditable(act, year.value, m) ? [key] : []
+    }
+    const keys = []
+    for (let m = 0; m < 12; m++) if (isMonthEditable(act, year.value, m)) keys.push(monthKey(year.value, m))
+    return keys
+  }
+
+  /**
+   * Quota freed by other activities that end during the month, placed on this activity through
+   * the month's last working day. `key` null covers every editable month of the chart year.
+   * Does not change assignments.
+   */
+  function previewReleased(actId, key) {
+    const a = getActivity(actId)
+    if (!a) return { assignments: [], changes: [] }
+    return planReleasedAlignment(a, state.value.activities, results.value, ctx.value, alignmentMonths(a, key))
+  }
+
+  /** Applies previewReleased. A second call is a no-op once that freed quota is already here. */
+  function alignReleased(actId, key) {
+    const plan = previewReleased(actId, key)
+    const a = getActivity(actId)
+    if (a && plan.changes.length) a.assignments = plan.assignments
+    return plan
+  }
+
   function toggleExpanded(id) {
     expanded.value[id] = !expanded.value[id]
   }
@@ -615,6 +648,8 @@ export const usePlanner = defineStore('planner', () => {
     moveAssignment,
     assignEvenly,
     clearAssignments,
+    previewReleased,
+    alignReleased,
     toggleExpanded,
     exportJson,
     importJson,
