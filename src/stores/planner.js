@@ -1,7 +1,7 @@
 import { defineStore } from 'pinia'
 import { computed, ref } from 'vue'
 import { useStorage } from '@vueuse/core'
-import { YEARS, addDays, addMonthsKey, diffDays, endOfMonthISO, monthKey, parseKey, toISO } from '../lib/calendar'
+import { YEARS, addDays, diffDays, endOfMonthISO, monthKey, parseKey, toISO } from '../lib/calendar'
 import {
   activityAllocations,
   assignmentSpan,
@@ -56,118 +56,13 @@ export function defaultState() {
 }
 
 function isValidState(s) {
-  const poolsOk = Array.isArray(s?.pools) || (s?.pools?.dev && s?.pools?.test)
-  return s && typeof s === 'object' && poolsOk && Array.isArray(s.swimlanes) && Array.isArray(s.activities)
-}
-
-/** Old allocations stored a head count per pool ({ dev: 2.5 }); spread it over named members. */
-function spreadCount(count, members) {
-  const out = {}
-  if (!(count > 0) || !members.length) return out
-  if (count > members.length) {
-    for (const m of members) out[m.id] = round(count / members.length)
-    return out
-  }
-  members.forEach((m, i) => {
-    const v = round(Math.min(1, count - i))
-    if (v > 0) out[m.id] = v
-  })
-  return out
-}
-
-/**
- * v1 stored a working-day count per month; v2 stored two anonymous pools (dev/test) with a head
- * count and per-month head counts on activities. v3 has named pools of individual members.
- */
-function migrateToV3(s) {
-  if (Array.isArray(s.pools)) return s
-  const { calendar, pools: old = {}, ...rest } = s
-  const pools = [
-    makePool('dev', 'Developer Pool', 'Developer', POOL_COLORS[0], old.dev?.count ?? 8, old.dev?.hoursPerDay ?? DEFAULT_HOURS),
-    makePool('test', 'Testing Pool', 'Tester', POOL_COLORS[1], old.test?.count ?? 4, old.test?.hoursPerDay ?? DEFAULT_HOURS),
-  ]
-  const activities = (rest.activities || []).map((a) => {
-    const alloc = {}
-    for (const [key, entry] of Object.entries(a.alloc || {})) {
-      const merged = Object.assign({}, ...pools.map((p) => spreadCount(entry?.[p.id] || 0, p.members)))
-      if (Object.keys(merged).length) alloc[key] = merged
-    }
-    return { ...a, estimate: { dev: a.estimate?.dev || 0, test: a.estimate?.test || 0 }, alloc }
-  })
-  return {
-    ...rest,
-    pools,
-    activities,
-    businessDays: old.dev?.businessDays ?? DEFAULT_BUSINESS_DAYS,
-    dayOverrides: rest.dayOverrides || {},
-  }
-}
-
-/**
- * v3 stored a multiplier per member per month (alloc['YYYY-MM'][memberId]); v4 stores
- * day-precise assignment ranges. Consecutive months with the same multiplier become one range;
- * a range that reaches the activity's own start (or a fixed activity's end) leaves that bound open.
- */
-function allocToAssignments(act, cal) {
-  const actEnd = act.mode === 'fixed' && act.end >= act.start ? act.end : null
-  const perMember = {}
-  for (const key of Object.keys(act.alloc || {}).sort()) {
-    for (const [memberId, mult] of Object.entries(act.alloc[key] || {})) {
-      if (mult > 0) (perMember[memberId] ||= []).push({ key, mult })
-    }
-  }
-  const out = []
-  for (const [memberId, months] of Object.entries(perMember)) {
-    let run = null
-    const flush = () => {
-      if (!run) return
-      const first = parseKey(run.first)
-      const last = parseKey(run.last)
-      let from = cal.nextWorking(toISO(first.y, first.m, 1))
-      let to = cal.prevWorking(endOfMonthISO(last.y, last.m))
-      if (from <= act.start || run.first <= act.start.slice(0, 7)) from = null
-      if (actEnd && to >= cal.prevWorking(actEnd)) to = null
-      if (!(to && to < (from || act.start))) out.push({ id: uid(), memberId, share: run.mult, from, to })
-      run = null
-    }
-    for (const { key, mult } of months) {
-      if (run && run.mult === mult && addMonthsKey(run.last, 1) === key) run.last = key
-      else {
-        flush()
-        run = { first: key, last: key, mult }
-      }
-    }
-    flush()
-  }
-  return out
-}
-
-export function migrate(raw) {
-  if (raw.version === VERSION && Array.isArray(raw.pools)) {
-    return {
-      ...defaultState(),
-      ...raw,
-      activities: (raw.activities || []).map((a) => ({ ...a, assignments: a.assignments || [] })),
-    }
-  }
-  const s = migrateToV3(raw)
-  const cal = makeCalendar(s.dayOverrides || {})
-  const activities = (s.activities || []).map(({ alloc, ...a }) => {
-    const assignments = a.assignments || allocToAssignments({ ...a, alloc }, cal)
-    const start = cal.nextWorking(a.start)
-    let end = a.end
-    if (a.mode === 'fixed') {
-      end = cal.prevWorking(a.end && a.end >= start ? a.end : start)
-      if (end < start) end = start
-    }
-    return { ...a, start, end, assignments }
-  })
-  return { ...defaultState(), ...s, activities, dayOverrides: s.dayOverrides || {}, version: VERSION }
+  return s && typeof s === 'object' && Array.isArray(s.pools) && Array.isArray(s.swimlanes) && Array.isArray(s.activities)
 }
 
 export const usePlanner = defineStore('planner', () => {
   const state = useStorage(STORAGE_KEY, defaultState(), localStorage, { mergeDefaults: true })
-  if (state.value.version !== VERSION || !Array.isArray(state.value.pools)) state.value = migrate(state.value)
+  // A saved state from another version can no longer be read: start from a blank plan.
+  if (state.value.version !== VERSION || !Array.isArray(state.value.pools)) state.value = defaultState()
   for (const a of state.value.activities) a.assignments ||= []
   const editingId = ref(null)
   const expanded = ref({})
@@ -594,7 +489,12 @@ export const usePlanner = defineStore('planner', () => {
   async function importJson(file) {
     const parsed = JSON.parse(await file.text())
     if (!isValidState(parsed)) throw new Error('This file is not a Horizon roadmap export.')
-    state.value = migrate(parsed)
+    if (parsed.version !== VERSION) throw new Error('This file was exported by another version of Horizon.')
+    state.value = {
+      ...defaultState(),
+      ...parsed,
+      activities: parsed.activities.map((a) => ({ ...a, assignments: a.assignments || [] })),
+    }
     editingId.value = null
   }
 

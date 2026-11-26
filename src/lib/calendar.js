@@ -33,11 +33,6 @@ export function addDays(iso, n) {
   return toISO(y, m, d + n)
 }
 
-export function addMonthsKey(key, n) {
-  const { y, m } = parseKey(key)
-  return monthKey(y, m + n)
-}
-
 export function monthIndex(y, m) {
   return y * 12 + m
 }
