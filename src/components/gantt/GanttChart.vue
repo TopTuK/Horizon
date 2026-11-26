@@ -7,6 +7,7 @@ import { MONTHS, MONTH_W, YEARS, dateToX, toISO } from '../../lib/calendar'
 import { endDrag, startDrag } from '../../lib/dnd'
 import SwimlaneRow from './SwimlaneRow.vue'
 import LoadFooter from './LoadFooter.vue'
+import OverloadBanner from './OverloadBanner.vue'
 import { LABEL_W } from './layout'
 
 const planner = usePlanner()
@@ -80,6 +81,8 @@ const width = LABEL_W + 12 * MONTH_W
         <button class="btn" @click="planner.addSwimlane()"><Plus class="size-4" /> Swimlane</button>
       </div>
     </div>
+
+    <OverloadBanner />
 
     <div class="card overflow-x-auto">
       <div class="relative" :style="{ width: width + 'px' }">

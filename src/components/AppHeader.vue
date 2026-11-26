@@ -11,6 +11,7 @@ const sections = [
   { id: 'pools', label: 'Resource Pool', icon: '/icons/pool.png' },
   { id: 'gantt', label: 'Smart Gantt', icon: '/icons/gantt.png' },
   { id: 'stats', label: 'Statistics', icon: '/icons/stats.png' },
+  { id: 'distribution', label: 'Distribution', icon: '/icons/distribution.png' },
 ]
 
 async function onImport(e) {

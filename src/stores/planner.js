@@ -1,22 +1,52 @@
 import { defineStore } from 'pinia'
 import { computed, ref } from 'vue'
 import { useStorage } from '@vueuse/core'
-import { YEARS, addDays, addMonthsKey, diffDays, monthKey, parseISO, toISO } from '../lib/calendar'
-import { buildEvenAllocation, computeActivity, poolLoad } from '../lib/planning'
+import { YEARS, addDays, addMonthsKey, diffDays, endOfMonthISO, monthKey, parseKey, toISO } from '../lib/calendar'
+import {
+  activityAllocations,
+  assignmentSpan,
+  buildAssignments,
+  computeActivity,
+  findOverloads,
+  memberDailyLoad,
+  memberLoads,
+  overloadedByMonth,
+  planReleasedAlignment,
+  poolLoad,
+  uid,
+} from '../lib/planning'
+import { isMonthEditable } from '../components/gantt/editable'
 import { isDefaultWorking, makeCalendar } from '../lib/workdays'
 
 const STORAGE_KEY = 'horizon-state'
+const VERSION = 4
 const LANE_COLORS = ['#818cf8', '#34d399', '#f472b6', '#fbbf24', '#38bdf8', '#a78bfa', '#fb7185', '#2dd4bf']
+export const POOL_COLORS = ['#818cf8', '#34d399', '#fbbf24', '#f472b6', '#38bdf8', '#fb7185', '#a78bfa', '#2dd4bf']
+const DEFAULT_HOURS = 6
+const DEFAULT_BUSINESS_DAYS = 221
 
-const uid = () => Math.random().toString(36).slice(2, 10)
+const round = (v, step = 0.05) => Math.round(v / step) * step
+
+function makeMembers(role, count, hoursPerDay = DEFAULT_HOURS) {
+  return Array.from({ length: count }, (_, i) => ({ id: uid(), name: `${role} ${i + 1}`, hoursPerDay }))
+}
+
+function makePool(id, name, role, color, count, hoursPerDay) {
+  return { id, name, role, color, members: makeMembers(role, count, hoursPerDay) }
+}
+
+/** "Design Pool" -> "Design"; used to name new members of a pool. */
+const roleFromName = (name) => name.replace(/\s*pool\s*$/i, '').trim() || 'Member'
 
 export function defaultState() {
   return {
-    version: 2,
-    pools: {
-      dev: { count: 8, hoursPerDay: 6, businessDays: 221 },
-      test: { count: 4, hoursPerDay: 6, businessDays: 221 },
-    },
+    version: VERSION,
+    /** Business days per year, shared by every pool (capped by the working calendar). */
+    businessDays: DEFAULT_BUSINESS_DAYS,
+    pools: [
+      makePool('dev', 'Developer Pool', 'Developer', POOL_COLORS[0], 8),
+      makePool('test', 'Testing Pool', 'Tester', POOL_COLORS[1], 4),
+    ],
     /** Days that differ from the default (weekdays working, weekends off): { 'YYYY-MM-DD': isWorking } */
     dayOverrides: {},
     selectedYear: YEARS[0],
@@ -26,32 +56,138 @@ export function defaultState() {
 }
 
 function isValidState(s) {
-  return (
-    s &&
-    typeof s === 'object' &&
-    s.pools?.dev &&
-    s.pools?.test &&
-    Array.isArray(s.swimlanes) &&
-    Array.isArray(s.activities)
-  )
+  const poolsOk = Array.isArray(s?.pools) || (s?.pools?.dev && s?.pools?.test)
+  return s && typeof s === 'object' && poolsOk && Array.isArray(s.swimlanes) && Array.isArray(s.activities)
 }
 
-/** Version 1 stored a working-day count per month; the day-level calendar replaces it. */
-function migrate(s) {
-  const { calendar, ...rest } = s
-  return { ...defaultState(), ...rest, dayOverrides: rest.dayOverrides || {}, version: 2 }
+/** Old allocations stored a head count per pool ({ dev: 2.5 }); spread it over named members. */
+function spreadCount(count, members) {
+  const out = {}
+  if (!(count > 0) || !members.length) return out
+  if (count > members.length) {
+    for (const m of members) out[m.id] = round(count / members.length)
+    return out
+  }
+  members.forEach((m, i) => {
+    const v = round(Math.min(1, count - i))
+    if (v > 0) out[m.id] = v
+  })
+  return out
+}
+
+/**
+ * v1 stored a working-day count per month; v2 stored two anonymous pools (dev/test) with a head
+ * count and per-month head counts on activities. v3 has named pools of individual members.
+ */
+function migrateToV3(s) {
+  if (Array.isArray(s.pools)) return s
+  const { calendar, pools: old = {}, ...rest } = s
+  const pools = [
+    makePool('dev', 'Developer Pool', 'Developer', POOL_COLORS[0], old.dev?.count ?? 8, old.dev?.hoursPerDay ?? DEFAULT_HOURS),
+    makePool('test', 'Testing Pool', 'Tester', POOL_COLORS[1], old.test?.count ?? 4, old.test?.hoursPerDay ?? DEFAULT_HOURS),
+  ]
+  const activities = (rest.activities || []).map((a) => {
+    const alloc = {}
+    for (const [key, entry] of Object.entries(a.alloc || {})) {
+      const merged = Object.assign({}, ...pools.map((p) => spreadCount(entry?.[p.id] || 0, p.members)))
+      if (Object.keys(merged).length) alloc[key] = merged
+    }
+    return { ...a, estimate: { dev: a.estimate?.dev || 0, test: a.estimate?.test || 0 }, alloc }
+  })
+  return {
+    ...rest,
+    pools,
+    activities,
+    businessDays: old.dev?.businessDays ?? DEFAULT_BUSINESS_DAYS,
+    dayOverrides: rest.dayOverrides || {},
+  }
+}
+
+/**
+ * v3 stored a multiplier per member per month (alloc['YYYY-MM'][memberId]); v4 stores
+ * day-precise assignment ranges. Consecutive months with the same multiplier become one range;
+ * a range that reaches the activity's own start (or a fixed activity's end) leaves that bound open.
+ */
+function allocToAssignments(act, cal) {
+  const actEnd = act.mode === 'fixed' && act.end >= act.start ? act.end : null
+  const perMember = {}
+  for (const key of Object.keys(act.alloc || {}).sort()) {
+    for (const [memberId, mult] of Object.entries(act.alloc[key] || {})) {
+      if (mult > 0) (perMember[memberId] ||= []).push({ key, mult })
+    }
+  }
+  const out = []
+  for (const [memberId, months] of Object.entries(perMember)) {
+    let run = null
+    const flush = () => {
+      if (!run) return
+      const first = parseKey(run.first)
+      const last = parseKey(run.last)
+      let from = cal.nextWorking(toISO(first.y, first.m, 1))
+      let to = cal.prevWorking(endOfMonthISO(last.y, last.m))
+      if (from <= act.start || run.first <= act.start.slice(0, 7)) from = null
+      if (actEnd && to >= cal.prevWorking(actEnd)) to = null
+      if (!(to && to < (from || act.start))) out.push({ id: uid(), memberId, share: run.mult, from, to })
+      run = null
+    }
+    for (const { key, mult } of months) {
+      if (run && run.mult === mult && addMonthsKey(run.last, 1) === key) run.last = key
+      else {
+        flush()
+        run = { first: key, last: key, mult }
+      }
+    }
+    flush()
+  }
+  return out
+}
+
+export function migrate(raw) {
+  if (raw.version === VERSION && Array.isArray(raw.pools)) {
+    return {
+      ...defaultState(),
+      ...raw,
+      activities: (raw.activities || []).map((a) => ({ ...a, assignments: a.assignments || [] })),
+    }
+  }
+  const s = migrateToV3(raw)
+  const cal = makeCalendar(s.dayOverrides || {})
+  const activities = (s.activities || []).map(({ alloc, ...a }) => {
+    const assignments = a.assignments || allocToAssignments({ ...a, alloc }, cal)
+    const start = cal.nextWorking(a.start)
+    let end = a.end
+    if (a.mode === 'fixed') {
+      end = cal.prevWorking(a.end && a.end >= start ? a.end : start)
+      if (end < start) end = start
+    }
+    return { ...a, start, end, assignments }
+  })
+  return { ...defaultState(), ...s, activities, dayOverrides: s.dayOverrides || {}, version: VERSION }
 }
 
 export const usePlanner = defineStore('planner', () => {
   const state = useStorage(STORAGE_KEY, defaultState(), localStorage, { mergeDefaults: true })
-  if (state.value.version !== 2) state.value = migrate(state.value)
+  if (state.value.version !== VERSION || !Array.isArray(state.value.pools)) state.value = migrate(state.value)
+  for (const a of state.value.activities) a.assignments ||= []
   const editingId = ref(null)
   const expanded = ref({})
   const calendarModal = ref({ open: false, month: null })
   const burndownId = ref(null)
 
   const cal = computed(() => makeCalendar(state.value.dayOverrides))
-  const ctx = computed(() => ({ pools: state.value.pools, cal: cal.value }))
+  const pools = computed(() => state.value.pools)
+  /** memberId -> { ...member, poolId } */
+  const members = computed(() => {
+    const index = {}
+    for (const p of state.value.pools) for (const m of p.members) index[m.id] = { ...m, poolId: p.id }
+    return index
+  })
+  const ctx = computed(() => ({
+    pools: state.value.pools,
+    members: members.value,
+    cal: cal.value,
+    businessDays: state.value.businessDays,
+  }))
 
   const year = computed({
     get: () => state.value.selectedYear,
@@ -62,7 +198,34 @@ export const usePlanner = defineStore('planner', () => {
     Object.fromEntries(state.value.activities.map((a) => [a.id, computeActivity(a, ctx.value)])),
   )
 
-  const load = computed(() => poolLoad(ctx.value, results.value, year.value))
+  /** { 'YYYY-MM': { memberId: share of the member's month } } across all activities. */
+  const memberLoad = computed(() => memberLoads(results.value))
+
+  /** { memberId: { iso: { hours, acts } } } across all activities. */
+  const memberDaily = computed(() => memberDailyLoad(results.value))
+
+  /** Periods where a member is booked for more than 1 FTE (their efficient hours per day). */
+  const overloads = computed(() => findOverloads(ctx.value, memberDaily.value))
+
+  const overMonths = computed(() => overloadedByMonth(overloads.value))
+
+  const load = computed(() => poolLoad(ctx.value, results.value, memberLoad.value, year.value, overMonths.value))
+
+  /** Monthly load and hours of the selected year, split by activity, for every pool and member. */
+  const allocByActivity = computed(() =>
+    activityAllocations(ctx.value, state.value.swimlanes, state.value.activities, results.value, year.value),
+  )
+
+  /** Overload periods of a member, optionally only those involving an activity and/or touching [from, to]. */
+  function overloadsFor(memberId, { activityId = null, from = null, to = null } = {}) {
+    return overloads.value.filter(
+      (o) =>
+        o.memberId === memberId &&
+        (!activityId || o.activityIds.includes(activityId)) &&
+        (!from || o.to >= from) &&
+        (!to || o.from <= to),
+    )
+  }
 
   const activitiesByLane = computed(() => {
     const map = {}
@@ -77,11 +240,80 @@ export const usePlanner = defineStore('planner', () => {
     return state.value.activities.find((a) => a.id === id)
   }
 
-  // Pools and calendar
+  // Pools and members
 
-  function setPool(poolId, patch) {
-    Object.assign(state.value.pools[poolId], patch)
+  function getPool(id) {
+    return state.value.pools.find((p) => p.id === id)
   }
+
+  function setBusinessDays(v) {
+    state.value.businessDays = Math.max(0, Math.min(366, Math.round(Number(v) || 0)))
+  }
+
+  function addPool(name) {
+    const clean = (name || '').trim() || `Pool ${state.value.pools.length + 1}`
+    const role = roleFromName(clean)
+    const pool = {
+      id: uid(),
+      name: clean,
+      role,
+      color: POOL_COLORS[state.value.pools.length % POOL_COLORS.length],
+      members: makeMembers(role, 1),
+    }
+    state.value.pools.push(pool)
+    return pool
+  }
+
+  function updatePool(id, patch) {
+    const pool = getPool(id)
+    if (pool) Object.assign(pool, patch)
+  }
+
+  /** Strips allocations of the given members from every activity. */
+  function dropAllocations(memberIds) {
+    const ids = new Set(memberIds)
+    for (const a of state.value.activities) a.assignments = (a.assignments || []).filter((x) => !ids.has(x.memberId))
+  }
+
+  function removePool(id) {
+    const pool = getPool(id)
+    if (!pool) return
+    dropAllocations(pool.members.map((m) => m.id))
+    for (const a of state.value.activities) if (a.estimate) delete a.estimate[id]
+    state.value.pools = state.value.pools.filter((p) => p.id !== id)
+  }
+
+  function addMember(poolId) {
+    const pool = getPool(poolId)
+    if (!pool) return null
+    const role = pool.role || roleFromName(pool.name)
+    const taken = new Set(pool.members.map((m) => m.name))
+    let n = pool.members.length + 1
+    while (taken.has(`${role} ${n}`)) n++
+    const hoursPerDay = pool.members.at(-1)?.hoursPerDay ?? DEFAULT_HOURS
+    const member = { id: uid(), name: `${role} ${n}`, hoursPerDay }
+    pool.members.push(member)
+    return member
+  }
+
+  function updateMember(memberId, patch) {
+    for (const p of state.value.pools) {
+      const m = p.members.find((x) => x.id === memberId)
+      if (m) return Object.assign(m, patch)
+    }
+  }
+
+  function removeMember(memberId) {
+    dropAllocations([memberId])
+    for (const p of state.value.pools) p.members = p.members.filter((m) => m.id !== memberId)
+  }
+
+  /** Whether the member is assigned to any activity. */
+  function isAssigned(memberId) {
+    return state.value.activities.some((a) => (a.assignments || []).some((x) => x.memberId === memberId))
+  }
+
+  // Calendar
 
   function setDayWorking(y, m, d, working) {
     const iso = toISO(y, m, d)
@@ -130,8 +362,17 @@ export const usePlanner = defineStore('planner', () => {
 
   // Activities
 
+  /** Starts never fall on a non-working day, and a fixed activity always ends on a working day. */
+  function normalizeDates(a) {
+    a.start = cal.value.nextWorking(a.start)
+    if (a.mode === 'fixed') {
+      if (!a.end || a.end < a.start) a.end = a.start
+      a.end = cal.value.prevWorking(a.end)
+      if (a.end < a.start) a.end = a.start
+    }
+  }
+
   function addActivity(laneId, start, mode = 'estimate') {
-    const s = parseISO(start)
     const activity = {
       id: uid(),
       laneId,
@@ -139,9 +380,12 @@ export const usePlanner = defineStore('planner', () => {
       mode,
       start,
       end: addDays(start, 59),
-      estimate: { dev: 480, test: 120 },
-      alloc: mode === 'estimate' ? { [monthKey(s.y, s.m)]: { dev: 1, test: 0 } } : {},
+      estimate: Object.fromEntries(state.value.pools.map((p, i) => [p.id, i === 0 ? 480 : 120])),
+      assignments: [],
     }
+    normalizeDates(activity)
+    const first = state.value.pools[0]?.members[0]
+    if (mode === 'estimate' && first) activity.assignments.push({ id: uid(), memberId: first.id, share: 1, from: null, to: null })
     state.value.activities.push(activity)
     expanded.value[activity.id] = true
     return activity
@@ -151,7 +395,7 @@ export const usePlanner = defineStore('planner', () => {
     const a = getActivity(id)
     if (!a) return
     Object.assign(a, patch)
-    if (a.mode === 'fixed' && a.end < a.start) a.end = a.start
+    if ('start' in patch || 'end' in patch || 'mode' in patch) normalizeDates(a)
   }
 
   function removeActivity(id) {
@@ -159,17 +403,20 @@ export const usePlanner = defineStore('planner', () => {
     if (editingId.value === id) editingId.value = null
   }
 
-  /** Moves the start date, keeping the duration (fixed) and shifting allocations by whole months. */
+  /** Moves the start date, keeping the duration (fixed) and shifting assignment ranges by the same number of days. */
   function moveActivity(id, newStart, laneId) {
     const a = getActivity(id)
     if (!a || !newStart) return
-    const o = parseISO(a.start)
-    const n = parseISO(newStart)
-    const monthShift = n.y * 12 + n.m - (o.y * 12 + o.m)
-    if (a.mode === 'fixed') a.end = addDays(a.end, diffDays(a.start, newStart))
-    a.start = newStart
-    if (monthShift) {
-      a.alloc = Object.fromEntries(Object.entries(a.alloc).map(([k, v]) => [addMonthsKey(k, monthShift), v]))
+    const shift = diffDays(a.start, newStart)
+    if (shift) {
+      if (a.mode === 'fixed') a.end = addDays(a.end, shift)
+      a.start = newStart
+      for (const x of a.assignments || []) {
+        if (x.from) x.from = cal.value.nextWorking(addDays(x.from, shift))
+        if (x.to) x.to = cal.value.prevWorking(addDays(x.to, shift))
+        if (x.from && x.to && x.to < x.from) x.to = x.from
+      }
+      normalizeDates(a)
     }
     if (laneId) a.laneId = laneId
   }
@@ -179,33 +426,153 @@ export const usePlanner = defineStore('planner', () => {
     if (!a) return
     if (edge === 'start') a.start = date <= a.end ? date : a.end
     else a.end = date >= a.start ? date : a.start
+    normalizeDates(a)
   }
 
-  function setAlloc(id, key, poolId, value) {
+  // Assignments: { id, memberId, share (part of 1 FTE), from, to }; a null bound follows the activity
+  // (from = activity start; to = fixed end, or "until the estimate is covered").
+
+  const clampShare = (v) => Math.max(0.05, Math.min(5, round(Number(v) || 0)))
+
+  function getAssignment(actId, asgId) {
+    return getActivity(actId)?.assignments.find((x) => x.id === asgId)
+  }
+
+  function addAssignment(actId, { memberId, share = 1, from = null, to = null }) {
+    const a = getActivity(actId)
+    if (!a || !members.value[memberId]) return null
+    a.assignments.push({ id: uid(), memberId, share: clampShare(share), from: null, to: null })
+    const x = a.assignments[a.assignments.length - 1]
+    updateAssignment(actId, x.id, { from, to })
+    return x
+  }
+
+  /** patch: { share?, from?, to? }; dates snap to working days (from forward, to backward). */
+  function updateAssignment(actId, asgId, patch) {
+    const a = getActivity(actId)
+    const x = getAssignment(actId, asgId)
+    if (!x) return
+    if ('share' in patch) x.share = clampShare(patch.share)
+    if ('from' in patch) {
+      const v = patch.from ? cal.value.nextWorking(patch.from) : null
+      x.from = v && v > a.start ? v : null
+    }
+    if ('to' in patch) {
+      const v = patch.to ? cal.value.prevWorking(patch.to) : null
+      x.to = v && a.mode === 'fixed' && v >= a.end ? null : v
+    }
+    const span = assignmentSpan(a, x)
+    if (span.to && span.to < span.from) {
+      if ('from' in patch) x.to = span.from
+      else x.from = span.to > a.start ? span.to : null
+    }
+  }
+
+  function removeAssignment(actId, asgId) {
+    const a = getActivity(actId)
+    if (a) a.assignments = a.assignments.filter((x) => x.id !== asgId)
+  }
+
+  /** Splits a range in two; the second part starts on the given (working) day with the same share. */
+  function splitAssignment(actId, asgId, at) {
+    const a = getActivity(actId)
+    const x = getAssignment(actId, asgId)
+    if (!x) return
+    const span = assignmentSpan(a, x)
+    const start = cal.value.nextWorking(at)
+    const firstEnd = cal.value.prevWorking(addDays(start, -1))
+    if (start <= span.from || firstEnd < span.from || (span.to && start > span.to)) return
+    const second = { id: uid(), memberId: x.memberId, share: x.share, from: start, to: x.to }
+    x.to = firstEnd
+    a.assignments.splice(a.assignments.indexOf(x) + 1, 0, second)
+  }
+
+  /** First working day of a month as an assignment start (null when it is the activity start or earlier). */
+  function monthStartFor(a, key) {
+    const { y, m } = parseKey(key)
+    const first = cal.value.nextWorking(toISO(y, m, 1))
+    return first > a.start ? first : null
+  }
+
+  /** Whether the member has a range on the activity that touches the month. */
+  function hasAssignmentIn(actId, key, memberId) {
+    const a = getActivity(actId)
+    if (!a) return false
+    const r = results.value[actId]
+    const { y, m } = parseKey(key)
+    const ms = toISO(y, m, 1)
+    const me = endOfMonthISO(y, m)
+    return a.assignments.some((x) => {
+      if (x.memberId !== memberId) return false
+      const s = assignmentSpan(a, x)
+      return s.from <= me && (s.to || r?.end || '9999-12-31') >= ms
+    })
+  }
+
+  /** Drop of a pool member on an activity month: 100% from that month on, unless already assigned there. */
+  function assignFromMonth(actId, key, memberId) {
+    const a = getActivity(actId)
+    if (!a || hasAssignmentIn(actId, key, memberId)) return
+    addAssignment(actId, { memberId, share: 1, from: monthStartFor(a, key), to: null })
+  }
+
+  /** Moves a range to another activity (or to another month of the same one), starting at the target month. */
+  function moveAssignment(fromActId, asgId, toActId, key) {
+    const x = getAssignment(fromActId, asgId)
+    const target = getActivity(toActId)
+    if (!x || !target) return
+    if (fromActId === toActId) {
+      updateAssignment(toActId, asgId, { from: monthStartFor(target, key) })
+      return
+    }
+    const { memberId, share } = x
+    removeAssignment(fromActId, asgId)
+    addAssignment(toActId, { memberId, share, from: monthStartFor(target, key), to: null })
+  }
+
+  /** options: { memberIds, share } */
+  function assignEvenly(id, options) {
     const a = getActivity(id)
     if (!a) return
-    const v = Math.max(0, Math.round((Number(value) || 0) * 10) / 10)
-    const entry = { dev: 0, test: 0, ...(a.alloc[key] || {}) }
-    entry[poolId] = v
-    if (!entry.dev && !entry.test) delete a.alloc[key]
-    else a.alloc[key] = entry
+    a.assignments = buildAssignments(a, ctx.value, options).map((x) =>
+      x.from === a.start && (x.to === null || x.to === a.end) ? { ...x, from: null, to: null } : x,
+    )
   }
 
-  function bumpAlloc(id, key, poolId, delta) {
+  function clearAssignments(id) {
     const a = getActivity(id)
-    if (!a) return
-    setAlloc(id, key, poolId, (a.alloc[key]?.[poolId] || 0) + delta)
+    if (a) a.assignments = []
   }
 
-  function fillEvenly(id, perMonth) {
-    const a = getActivity(id)
-    if (!a) return
-    a.alloc = buildEvenAllocation(a, ctx.value, perMonth)
+  /** Month keys the alignment can touch: one chart-year month, or every editable month when `key` is null. */
+  function alignmentMonths(act, key) {
+    if (!act) return []
+    if (key) {
+      const { y, m } = parseKey(key)
+      return y === year.value && isMonthEditable(act, year.value, m) ? [key] : []
+    }
+    const keys = []
+    for (let m = 0; m < 12; m++) if (isMonthEditable(act, year.value, m)) keys.push(monthKey(year.value, m))
+    return keys
   }
 
-  function clearAlloc(id) {
-    const a = getActivity(id)
-    if (a) a.alloc = {}
+  /**
+   * Quota freed by other activities that end during the month, placed on this activity through
+   * the month's last working day. `key` null covers every editable month of the chart year.
+   * Does not change assignments.
+   */
+  function previewReleased(actId, key) {
+    const a = getActivity(actId)
+    if (!a) return { assignments: [], changes: [] }
+    return planReleasedAlignment(a, state.value.activities, results.value, ctx.value, alignmentMonths(a, key))
+  }
+
+  /** Applies previewReleased. A second call is a no-op once that freed quota is already here. */
+  function alignReleased(actId, key) {
+    const plan = previewReleased(actId, key)
+    const a = getActivity(actId)
+    if (a && plan.changes.length) a.assignments = plan.assignments
+    return plan
   }
 
   function toggleExpanded(id) {
@@ -242,8 +609,15 @@ export const usePlanner = defineStore('planner', () => {
     year,
     cal,
     ctx,
+    pools,
+    members,
+    memberLoad,
+    memberDaily,
+    overloads,
+    overloadsFor,
     results,
     load,
+    allocByActivity,
     activitiesByLane,
     editingId,
     editing,
@@ -251,7 +625,15 @@ export const usePlanner = defineStore('planner', () => {
     calendarModal,
     burndownId,
     getActivity,
-    setPool,
+    getPool,
+    setBusinessDays,
+    addPool,
+    updatePool,
+    removePool,
+    addMember,
+    updateMember,
+    removeMember,
+    isAssigned,
     setDayWorking,
     resetCalendar,
     openCalendar,
@@ -264,10 +646,17 @@ export const usePlanner = defineStore('planner', () => {
     removeActivity,
     moveActivity,
     resizeActivity,
-    setAlloc,
-    bumpAlloc,
-    fillEvenly,
-    clearAlloc,
+    addAssignment,
+    updateAssignment,
+    removeAssignment,
+    splitAssignment,
+    hasAssignmentIn,
+    assignFromMonth,
+    moveAssignment,
+    assignEvenly,
+    clearAssignments,
+    previewReleased,
+    alignReleased,
     toggleExpanded,
     exportJson,
     importJson,

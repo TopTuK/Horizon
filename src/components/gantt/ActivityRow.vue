@@ -4,7 +4,7 @@ import { AlertTriangle, CalendarRange, CheckCircle2, ChevronDown, ChevronRight, 
 import { usePlanner } from '../../stores/planner'
 import { MONTH_W, formatDate, monthKey, xToDate } from '../../lib/calendar'
 import { dragPayload, readDrop } from '../../lib/dnd'
-import { fmtHours, hasBurndown } from '../../lib/planning'
+import { describeByPool, hasBurndown } from '../../lib/planning'
 import ActivityBar from './ActivityBar.vue'
 import AllocationRow from './AllocationRow.vue'
 import { LABEL_W, gridStyle } from './layout'
@@ -21,7 +21,7 @@ const burndownAvailable = computed(() => hasBurndown(props.activity, result.valu
 const hot = ref(false)
 
 function accepts() {
-  return dragPayload.value && ['employee', 'new-activity'].includes(dragPayload.value.type)
+  return dragPayload.value && ['member', 'new-activity'].includes(dragPayload.value.type)
 }
 
 function onDragOver(e) {
@@ -39,10 +39,11 @@ function onDrop(e) {
     planner.editingId = planner.addActivity(props.lane.id, xToDate(x, planner.year), p.mode).id
     return
   }
-  if (p.type === 'employee') {
+  if (p.type === 'member') {
     const m = Math.min(11, Math.max(0, Math.floor(x / MONTH_W)))
     if (!isMonthEditable(props.activity, planner.year, m)) return
-    planner.bumpAlloc(props.activity.id, monthKey(planner.year, m), p.pool, 1)
+    const key = monthKey(planner.year, m)
+    planner.assignFromMonth(props.activity.id, key, p.memberId)
     planner.expanded[props.activity.id] = true
   }
 }
@@ -74,7 +75,7 @@ function onDrop(e) {
         </span>
         <span
           v-else-if="!result.complete"
-          :title="`Missing ${fmtHours(result.missing.dev)} h dev, ${fmtHours(result.missing.test)} h test`"
+          :title="`Missing ${describeByPool(planner.state.pools, result.missing)}`"
         >
           <AlertTriangle class="size-4 text-red-400" />
         </span>

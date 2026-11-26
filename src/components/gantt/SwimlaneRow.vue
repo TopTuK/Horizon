@@ -4,7 +4,7 @@ import { ChevronDown, ChevronRight, GripVertical, Plus, Trash2 } from 'lucide-vu
 import { usePlanner } from '../../stores/planner'
 import { MONTH_W, dateEndToX, dateToX, toISO, xToDate } from '../../lib/calendar'
 import { dragPayload, readDrop } from '../../lib/dnd'
-import { fmtHours } from '../../lib/planning'
+import { describeByPool, sumValues } from '../../lib/planning'
 import ActivityRow from './ActivityRow.vue'
 import { LABEL_W, gridStyle } from './layout'
 
@@ -16,16 +16,14 @@ const hot = ref(false)
 const hoverX = ref(null)
 
 const totals = computed(() => {
-  let dev = 0
-  let test = 0
+  const planned = {}
   let missing = 0
   for (const a of activities.value) {
     const r = planner.results[a.id]
-    dev += r.planned.dev
-    test += r.planned.test
+    for (const [p, h] of Object.entries(r.planned)) planned[p] = (planned[p] || 0) + h
     if (!r.complete) missing++
   }
-  return { dev, test, missing }
+  return { planned, missing }
 })
 
 const visibleMini = computed(() =>
@@ -119,7 +117,7 @@ function confirmRemove() {
           }"
         />
         <div class="pointer-events-none absolute inset-y-0 right-3 flex items-center text-[11px] text-zinc-500">
-          {{ activities.length }} activities · {{ fmtHours(totals.dev) }} h dev · {{ fmtHours(totals.test) }} h test
+          {{ activities.length }} activities<template v-if="sumValues(totals.planned) > 0.5"> · {{ describeByPool(planner.state.pools, totals.planned) }}</template>
         </div>
         <div
           v-if="hot && hoverX !== null"

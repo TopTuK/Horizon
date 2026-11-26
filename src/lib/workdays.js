@@ -1,4 +1,4 @@
-import { daysInMonth, toISO } from './calendar'
+import { addDays, daysInMonth, parseISO, toISO } from './calendar'
 
 /** Saturday and Sunday are non-working unless overridden. */
 export function isDefaultWorking(y, m, d) {
@@ -52,5 +52,36 @@ export function makeCalendar(overrides = {}) {
     return n
   }
 
-  return { isWorking, monthDays, monthCount, yearCount, countRange }
+  function isWorkingISO(iso) {
+    const { y, m, d } = parseISO(iso)
+    return isWorking(y, m, d)
+  }
+
+  /** The day itself when it is a working day, otherwise the next working day (searches up to a year). */
+  function nextWorking(iso) {
+    let cur = iso
+    for (let i = 0; i < 366 && !isWorkingISO(cur); i++) cur = addDays(cur, 1)
+    return cur
+  }
+
+  /** The day itself when it is a working day, otherwise the previous working day (searches up to a year). */
+  function prevWorking(iso) {
+    let cur = iso
+    for (let i = 0; i < 366 && !isWorkingISO(cur); i++) cur = addDays(cur, -1)
+    return cur
+  }
+
+  /** Working days from `from` to `to` inclusive, as ISO dates. */
+  function* workingDaysBetween(from, to) {
+    const s = parseISO(from)
+    const e = parseISO(to)
+    for (let y = s.y, m = s.m; y * 12 + m <= e.y * 12 + e.m; m === 11 ? (y++, (m = 0)) : m++) {
+      for (const d of monthDays(y, m)) {
+        const iso = toISO(y, m, d)
+        if (iso >= from && iso <= to) yield iso
+      }
+    }
+  }
+
+  return { isWorking, isWorkingISO, monthDays, monthCount, yearCount, countRange, nextWorking, prevWorking, workingDaysBetween }
 }
