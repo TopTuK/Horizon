@@ -33,3 +33,9 @@ Desktop.ini
 *.sln
 *.sw?
 .claude/*
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+.pytest_cache/

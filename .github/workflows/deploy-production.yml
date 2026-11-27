@@ -10,23 +10,21 @@ env:
 
 jobs:
   build:
-    name: Build and push images
+    name: Build and push image
     runs-on: ubuntu-latest
     permissions:
       contents: read
       packages: write
     outputs:
-      web-image: ${{ steps.images.outputs.web }}
+      image: ${{ steps.image.outputs.name }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
       # ghcr.io requires lowercase image names; GITHUB_REPOSITORY may contain uppercase
-      - name: Compute image names
-        id: images
-        run: |
-          REPO="${GITHUB_REPOSITORY,,}"
-          echo "web=ghcr.io/${REPO}-web" >> "$GITHUB_OUTPUT"
+      - name: Compute the image name
+        id: image
+        run: echo "name=ghcr.io/${GITHUB_REPOSITORY,,}" >> "$GITHUB_OUTPUT"
 
       - name: Log in to Container Registry
         uses: docker/login-action@v3
@@ -38,13 +36,13 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
-      - name: Build and push Web image
+      - name: Build and push image
         uses: docker/build-push-action@v6
         with:
           context: .
           file: ./Dockerfile
           push: true
-          tags: ${{ steps.images.outputs.web }}:latest
+          tags: ${{ steps.image.outputs.name }}:latest
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
@@ -56,6 +54,8 @@ jobs:
       SSH_KEY_PATH: /tmp/ssh_key
       ENV_FILE_PATH: /tmp/production.env
       SSH_PORT: ${{ secrets.PRODUCTION_SSH_PORT || 22 }}
+      IMAGE: ${{ needs.build.outputs.image }}
+      HOST: ${{ vars.VIRTUAL_HOST || 'horizon.pmi.moscow' }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -85,11 +85,22 @@ jobs:
           chmod 600 ${{ env.SSH_KEY_PATH }}
           head -n1 ${{ env.SSH_KEY_PATH }} | grep -q "BEGIN.*KEY" || (echo "Invalid key format" && exit 1)
 
+      # The database password and the session secret are not secrets of this workflow: the server
+      # generates them at the first deploy and keeps them (see the deploy step), so that a redeploy
+      # never changes them. An empty provider credential simply leaves that provider off.
       - name: Generate production .env
         run: |
           {
-            echo "VIRTUAL_HOST=${{ vars.VIRTUAL_HOST || 'horizon.pmi.moscow' }}"
+            echo "VIRTUAL_HOST=${{ env.HOST }}"
             echo "WEB_HOST_PORT=${{ vars.WEB_HOST_PORT || '8087' }}"
+            echo "BASE_URL=https://${{ env.HOST }}"
+            echo "OIDC_CLIENT_ID=${{ secrets.OIDC_CLIENT_ID }}"
+            echo "OIDC_CLIENT_SECRET=${{ secrets.OIDC_CLIENT_SECRET }}"
+            echo "OIDC_AUTHORITY=${{ secrets.OIDC_AUTHORITY }}"
+            echo "YANDEX_CLIENT_ID=${{ secrets.YANDEX_CLIENT_ID }}"
+            echo "YANDEX_CLIENT_SECRET=${{ secrets.YANDEX_CLIENT_SECRET }}"
+            echo "GOOGLE_CLIENT_ID=${{ secrets.GOOGLE_CLIENT_ID }}"
+            echo "GOOGLE_CLIENT_SECRET=${{ secrets.GOOGLE_CLIENT_SECRET }}"
           } > ${{ env.ENV_FILE_PATH }}
           chmod 600 ${{ env.ENV_FILE_PATH }}
 
@@ -105,17 +116,31 @@ jobs:
       - name: Deploy on PROD server
         run: |
           ssh -p ${{ env.SSH_PORT }} -o StrictHostKeyChecking=no -o IdentitiesOnly=yes -i ${{ env.SSH_KEY_PATH }} \
+            ${{ secrets.PRODUCTION_SSH_USERNAME }}@${{ secrets.PRODUCTION_SSH_HOST }} "
+          set -e
+          cd ${{ env.DEPLOY_DIR }}
+
+          # Keep what only the server knows, then fill in the rest from this deploy.
+          { grep -E '^(POSTGRES_PASSWORD|SESSION_SECRET_KEY)=' .env 2>/dev/null || true; } > kept.env
+          cat production.env kept.env > .env.new
+          grep -q '^POSTGRES_PASSWORD=' .env.new || echo \"POSTGRES_PASSWORD=\$(tr -dc 'a-f0-9' < /dev/urandom | head -c 64)\" >> .env.new
+          grep -q '^SESSION_SECRET_KEY=' .env.new || echo \"SESSION_SECRET_KEY=\$(tr -dc 'a-f0-9' < /dev/urandom | head -c 64)\" >> .env.new
+          chmod 600 .env.new && mv .env.new .env && rm -f kept.env production.env
+
+          echo '${{ secrets.REGISTRY_TOKEN }}' | docker login ${{ env.REGISTRY }} -u ${{ github.actor }} --password-stdin
+          (docker network inspect pmi_network >/dev/null 2>&1 || docker network create pmi_network)
+          docker pull ${{ env.IMAGE }}:latest
+          docker tag ${{ env.IMAGE }}:latest horizon:latest
+          docker compose -f docker-compose.production.yml down --remove-orphans
+          docker compose -f docker-compose.production.yml up -d --no-build --force-recreate --wait --wait-timeout 180
+          docker image prune -af
+          "
+
+      - name: Verify the deployment
+        run: |
+          ssh -p ${{ env.SSH_PORT }} -o StrictHostKeyChecking=no -o IdentitiesOnly=yes -i ${{ env.SSH_KEY_PATH }} \
             ${{ secrets.PRODUCTION_SSH_USERNAME }}@${{ secrets.PRODUCTION_SSH_HOST }} \
-            "cd ${{ env.DEPLOY_DIR }} && \
-             mv production.env .env && \
-             chmod 600 .env && \
-             echo '${{ secrets.REGISTRY_TOKEN }}' | docker login ${{ env.REGISTRY }} -u ${{ github.actor }} --password-stdin && \
-             (docker network inspect pmi_network >/dev/null 2>&1 || docker network create pmi_network) && \
-             docker pull ${{ needs.build.outputs.web-image }}:latest && \
-             docker tag ${{ needs.build.outputs.web-image }}:latest horizon-web:latest && \
-             docker compose -f docker-compose.production.yml down --remove-orphans && \
-             docker compose -f docker-compose.production.yml up -d --no-build --force-recreate && \
-             docker image prune -af"
+            "curl -fsS --retry 5 --retry-delay 3 --retry-connrefused http://127.0.0.1:${{ vars.WEB_HOST_PORT || '8087' }}/health"
 
       - name: Clean up local secrets
         if: always()
