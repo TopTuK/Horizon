@@ -4,7 +4,7 @@ import { Bar } from 'vue-chartjs'
 import { BarElement, CategoryScale, Chart as ChartJS, LinearScale, Tooltip } from 'chart.js'
 import { usePlanner } from '../../stores/planner'
 import { MONTHS } from '../../lib/calendar'
-import { fmtNum, initials } from '../../lib/planning'
+import { fmtNum, initials, memberYearDays } from '../../lib/planning'
 import { histogramData, histogramOptions, shareLine, sumItems } from './distributionChart'
 
 ChartJS.register(BarElement, CategoryScale, LinearScale, Tooltip)
@@ -22,7 +22,7 @@ const allocated = computed(() => series.value?.load.some((v) => v > 1e-9) || fal
 
 /** Share of the member's yearly capacity (efficient hours × working days) booked in the selected year. */
 const utilization = computed(() => {
-  const days = Math.min(planner.state.businessDays, planner.cal.yearCount(planner.year))
+  const days = memberYearDays(planner.ctx, props.member, planner.year)
   const capacity = (props.member.hoursPerDay || 0) * days
   return capacity ? (series.value?.hours.reduce((s, h) => s + h, 0) || 0) / capacity : 0
 })

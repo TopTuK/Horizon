@@ -7,12 +7,15 @@ const OVER = 1 + 1e-6
 
 /*
  * All functions take a planning context: { pools, members, cal, businessDays }.
- * - pools: [{ id, name, color, members: [{ id, name, hoursPerDay }] }]
+ * - pools: [{ id, name, color, members: [{ id, name, hoursPerDay, absences }] }]
  * - members: index memberId -> { ...member, poolId }
  * - cal: makeCalendar() result that knows which individual days are working days
+ * Absences are inclusive ranges { id, kind, from, to }. On a working day any range covers,
+ * that person books nothing and adds nothing to capacity. A day in two ranges counts once.
  * Activities carry assignments: [{ id, memberId, share, from, to }], where share is the part of
  * the member's FTE (efficient hours per day) spent on the activity on every working day of the
- * range [from, to]. `to = null` on an estimated activity means "until the estimate is covered".
+ * range [from, to] that the member is present. `to = null` on an estimated activity means
+ * "until the estimate is covered".
  */
 
 export const uid = () => Math.random().toString(36).slice(2, 10)
@@ -31,14 +34,51 @@ export function avgMemberHours(pool) {
   return pool.members.length ? poolDayHours(pool) / pool.members.length : 6
 }
 
-/** Yearly man-hours of the pool, limited by the shared business days per year. */
-export function poolYearHours(ctx, pool, y) {
-  return poolDayHours(pool) * Math.min(ctx.businessDays, ctx.cal.yearCount(y))
+/** True when `iso` falls inside any of the member's time-off ranges. */
+export function isAbsent(member, iso) {
+  for (const a of member?.absences || []) {
+    if (a.from <= iso && iso <= a.to) return true
+  }
+  return false
 }
 
-/** Man-hours the whole pool can deliver in a month. */
+/**
+ * Working days in [from, to] covered by any absence range. A day in two ranges is counted once.
+ * Weekends and holidays are omitted because they are already non-working.
+ */
+export function absentWorkingDays(cal, absences, from, to) {
+  const days = new Set()
+  for (const a of absences || []) {
+    if (!a?.from || !a?.to) continue
+    const start = a.from > from ? a.from : from
+    const end = a.to < to ? a.to : to
+    if (end < start) continue
+    for (const iso of cal.workingDaysBetween(start, end)) days.add(iso)
+  }
+  return days
+}
+
+/** Working days of the year that count toward this person's capacity, after the shared cap and time off. */
+export function memberYearDays(ctx, member, y) {
+  const capped = Math.min(ctx.businessDays, ctx.cal.yearCount(y))
+  const absent = absentWorkingDays(ctx.cal, member?.absences, `${y}-01-01`, `${y}-12-31`).size
+  return Math.max(0, capped - absent)
+}
+
+/** Yearly man-hours of the pool: each person's capped working days, minus the days they are away. */
+export function poolYearHours(ctx, pool, y) {
+  return pool.members.reduce((s, m) => s + (m.hoursPerDay || 0) * memberYearDays(ctx, m, y), 0)
+}
+
+/** Man-hours the pool can deliver in a month: each working day, only the people who are present. */
 export function poolMonthCapacity(ctx, pool, y, m) {
-  return poolDayHours(pool) * ctx.cal.monthCount(y, m)
+  let hours = 0
+  for (const iso of ctx.cal.workingDaysBetween(toISO(y, m, 1), endOfMonthISO(y, m))) {
+    for (const member of pool.members) {
+      if (!isAbsent(member, iso)) hours += member.hoursPerDay || 0
+    }
+  }
+  return hours
 }
 
 /** Effective [from, to] of an assignment inside its activity; to = null means open-ended. */
@@ -71,9 +111,9 @@ function emptyMonth(ctx) {
 }
 
 /**
- * Walks the activity day by day. Each working day every active assignment books share × h/day;
- * for an estimated activity a pool stops booking (pro rata on its last day) once its estimate
- * is covered.
+ * Walks the activity day by day. Each working day every active assignment of a person who is
+ * present books share × h/day; a day inside a vacation or absence books nothing. For an estimated
+ * activity a pool stops booking (pro rata on its last day) once its estimate is covered.
  */
 export function computeActivity(act, ctx) {
   const fixed = act.mode === 'fixed'
@@ -116,7 +156,7 @@ export function computeActivity(act, ctx) {
     const month = (months[key] ||= emptyMonth(ctx))
     const people = (monthPeople[key] ||= byPool(ctx))
     const dayPools = byPool(ctx)
-    const active = asg.filter((a) => isActive(a, iso))
+    const active = asg.filter((a) => isActive(a, iso) && !isAbsent(ctx.members[a.memberId], iso))
     const rates = byPool(ctx)
     for (const a of active) rates[a.poolId] += a.share * a.hpd
     lastRates = rates

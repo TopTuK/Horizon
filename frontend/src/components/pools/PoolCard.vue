@@ -1,6 +1,6 @@
 <script setup>
 import { computed, ref } from 'vue'
-import { Trash2, UserRoundPlus, X } from 'lucide-vue-next'
+import { CalendarOff, Trash2, UserRoundPlus, X } from 'lucide-vue-next'
 import { usePlanner } from '../../stores/planner'
 import { fmtHours, fmtNum, initials, isOverloaded, peakDailyShare, poolDayHours, poolYearHours } from '../../lib/planning'
 import { dragPayload, endDrag, readDrop, startDrag } from '../../lib/dnd'
@@ -120,17 +120,18 @@ function peakTitle(member) {
     </div>
 
     <div class="overflow-hidden rounded-lg border border-zinc-800">
-      <div class="grid grid-cols-[36px_1fr_96px_56px_24px] items-center gap-2 bg-zinc-900 px-3 py-1.5 text-[11px] text-zinc-500">
+      <div class="grid grid-cols-[36px_1fr_96px_56px_44px_24px] items-center gap-2 bg-zinc-900 px-3 py-1.5 text-[11px] text-zinc-500">
         <span />
         <span>Name</span>
         <span>Efficient h / day</span>
         <span class="text-right">Peak</span>
+        <span class="text-right">Off</span>
         <span />
       </div>
       <div
         v-for="m in pool.members"
         :key="m.id"
-        class="grid grid-cols-[36px_1fr_96px_56px_24px] items-center gap-2 border-t border-zinc-900 px-3 py-1"
+        class="grid grid-cols-[36px_1fr_96px_56px_44px_24px] items-center gap-2 border-t border-zinc-900 px-3 py-1"
       >
         <div
           draggable="true"
@@ -162,6 +163,15 @@ function peakTitle(member) {
           :title="peakTitle(m)"
           >{{ dayPeak[m.id]?.date ? fmtNum(dayPeak[m.id].share * 100, 0) + '%' : '—' }}</span
         >
+        <button
+          class="inline-flex items-center justify-end gap-0.5 text-zinc-500 hover:text-indigo-300"
+          :aria-label="m.absences?.length ? `Vacations and absences, ${m.absences.length}` : 'Vacations and absences'"
+          title="Vacations and absences"
+          @click="planner.openAbsences(m.id)"
+        >
+          <CalendarOff class="size-4" aria-hidden="true" />
+          <span v-if="m.absences?.length" aria-hidden="true" class="text-[10px] tabular-nums text-indigo-300">{{ m.absences.length }}</span>
+        </button>
         <button class="text-zinc-600 hover:text-red-400" title="Remove" @click="removeMember(m)"><X class="size-4" /></button>
       </div>
       <p v-if="!pool.members.length" class="border-t border-zinc-900 px-3 py-3 text-xs text-zinc-500">Pool is empty.</p>

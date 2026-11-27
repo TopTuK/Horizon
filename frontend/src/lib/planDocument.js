@@ -13,7 +13,7 @@ export const DEFAULT_HOURS = 6
 const DEFAULT_BUSINESS_DAYS = 221
 
 function makeMembers(role, count, hoursPerDay = DEFAULT_HOURS) {
-  return Array.from({ length: count }, (_, i) => ({ id: uid(), name: `${role} ${i + 1}`, hoursPerDay }))
+  return Array.from({ length: count }, (_, i) => ({ id: uid(), name: `${role} ${i + 1}`, hoursPerDay, absences: [] }))
 }
 
 function makePool(id, name, role, color, count, hoursPerDay) {
@@ -41,11 +41,21 @@ export function isValidState(s) {
   return s && typeof s === 'object' && Array.isArray(s.pools) && Array.isArray(s.swimlanes) && Array.isArray(s.activities)
 }
 
+function normalizeMember(member) {
+  return { ...member, absences: Array.isArray(member.absences) ? member.absences : [] }
+}
+
+function normalizePool(pool) {
+  return { ...pool, members: (pool.members || []).map(normalizeMember) }
+}
+
 /** A stored document as the editor expects it: defaults for anything missing, an assignments array on every activity. */
 export function normalizeDocument(data) {
+  const base = defaultState()
   return {
-    ...defaultState(),
+    ...base,
     ...data,
+    pools: (data.pools ?? base.pools).map(normalizePool),
     activities: (data.activities || []).map((a) => ({ ...a, assignments: a.assignments || [] })),
   }
 }
@@ -54,7 +64,10 @@ function isUntouchedPool(pool) {
   const expected = pool.id === 'dev' ? 8 : pool.id === 'test' ? 4 : 0
   return (
     pool.members.length === expected &&
-    pool.members.every((m, i) => m.name === `${pool.role} ${i + 1}` && m.hoursPerDay === DEFAULT_HOURS)
+    pool.members.every(
+      (m, i) =>
+        m.name === `${pool.role} ${i + 1}` && m.hoursPerDay === DEFAULT_HOURS && !(m.absences || []).length,
+    )
   )
 }
 

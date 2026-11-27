@@ -59,6 +59,7 @@ export const usePlanner = defineStore('planner', () => {
   const editingId = ref(null)
   const expanded = ref({})
   const calendarModal = ref({ open: false, month: null })
+  const absenceModal = ref({ open: false, memberId: null })
   const burndownId = ref(null)
 
   const cal = computed(() => makeCalendar(state.value.dayOverrides))
@@ -178,7 +179,7 @@ export const usePlanner = defineStore('planner', () => {
     let n = pool.members.length + 1
     while (taken.has(`${role} ${n}`)) n++
     const hoursPerDay = pool.members.at(-1)?.hoursPerDay ?? DEFAULT_HOURS
-    const member = { id: uid(), name: `${role} ${n}`, hoursPerDay }
+    const member = { id: uid(), name: `${role} ${n}`, hoursPerDay, absences: [] }
     pool.members.push(member)
     return member
   }
@@ -218,6 +219,60 @@ export const usePlanner = defineStore('planner', () => {
 
   function openCalendar(month = null) {
     calendarModal.value = { open: true, month }
+  }
+
+  // Vacations and absences: inclusive ranges on a member. A range that ends before it starts is ignored.
+
+  const ABSENCE_KINDS = new Set(['vacation', 'absence'])
+
+  function absenceValid({ kind, from, to }) {
+    return ABSENCE_KINDS.has(kind) && typeof from === 'string' && typeof to === 'string' && from.length > 0 && to >= from
+  }
+
+  function memberRecord(memberId) {
+    for (const p of state.value.pools) {
+      const m = p.members.find((x) => x.id === memberId)
+      if (m) return m
+    }
+    return null
+  }
+
+  function openAbsences(memberId) {
+    if (!memberRecord(memberId)) return
+    absenceModal.value = { open: true, memberId }
+  }
+
+  function closeAbsences() {
+    absenceModal.value = { open: false, memberId: null }
+  }
+
+  function addAbsence(memberId, { kind, from, to }) {
+    const member = memberRecord(memberId)
+    if (!member || !absenceValid({ kind, from, to })) return null
+    if (!Array.isArray(member.absences)) member.absences = []
+    const absence = { id: uid(), kind, from, to }
+    member.absences.push(absence)
+    return absence
+  }
+
+  function updateAbsence(memberId, absenceId, patch) {
+    const member = memberRecord(memberId)
+    const absence = member?.absences?.find((a) => a.id === absenceId)
+    if (!absence) return false
+    const next = {
+      kind: patch.kind ?? absence.kind,
+      from: patch.from ?? absence.from,
+      to: patch.to ?? absence.to,
+    }
+    if (!absenceValid(next)) return false
+    Object.assign(absence, next)
+    return true
+  }
+
+  function removeAbsence(memberId, absenceId) {
+    const member = memberRecord(memberId)
+    if (!member?.absences) return
+    member.absences = member.absences.filter((a) => a.id !== absenceId)
   }
 
   // Swimlanes
@@ -599,6 +654,7 @@ export const usePlanner = defineStore('planner', () => {
   async function openPlan(id) {
     await flushSave()
     close()
+    absenceModal.value = { open: false, memberId: null }
     const token = ++loadId
     loadStatus.value = 'loading'
     loadError.value = null
@@ -729,6 +785,7 @@ export const usePlanner = defineStore('planner', () => {
     editing,
     expanded,
     calendarModal,
+    absenceModal,
     burndownId,
     getActivity,
     getPool,
@@ -743,6 +800,11 @@ export const usePlanner = defineStore('planner', () => {
     setDayWorking,
     resetCalendar,
     openCalendar,
+    openAbsences,
+    closeAbsences,
+    addAbsence,
+    updateAbsence,
+    removeAbsence,
     addSwimlane,
     updateSwimlane,
     removeSwimlane,

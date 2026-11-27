@@ -11,6 +11,7 @@ import ActivityEditor from '../components/gantt/ActivityEditor.vue'
 import StatisticsSection from '../components/stats/StatisticsSection.vue'
 import DistributionSection from '../components/stats/DistributionSection.vue'
 import WorkingCalendarModal from '../components/calendar/WorkingCalendarModal.vue'
+import AbsenceModal from '../components/pools/AbsenceModal.vue'
 import BurndownModal from '../components/gantt/BurndownModal.vue'
 
 const planner = usePlanner()
@@ -108,6 +109,7 @@ const loadMessages = {
     <template v-if="planner.loadStatus === 'ready'">
       <ActivityEditor />
       <WorkingCalendarModal />
+      <AbsenceModal />
       <BurndownModal />
     </template>
   </div>

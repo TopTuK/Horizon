@@ -5,7 +5,7 @@ import { BarElement, CategoryScale, Chart as ChartJS, Legend, LinearScale, Toolt
 import { AlertTriangle } from 'lucide-vue-next'
 import { usePlanner } from '../../stores/planner'
 import { MONTHS, formatDate } from '../../lib/calendar'
-import { avgMemberHours, describeByPool, fmtHours, fmtNum, poolDayHours, poolYearHours } from '../../lib/planning'
+import { avgMemberHours, describeByPool, fmtHours, fmtNum, memberYearDays, poolDayHours, poolYearHours } from '../../lib/planning'
 import { withAlpha } from '../../lib/color'
 
 ChartJS.register(BarElement, CategoryScale, LinearScale, Tooltip, Legend)
@@ -20,7 +20,6 @@ const poolStats = computed(() =>
     const p = pool.id
     const capacity = poolYearHours(planner.ctx, pool, planner.year)
     const allocated = planner.load.reduce((s, r) => s + r.pools[p].hours, 0)
-    const effectiveDays = Math.min(planner.state.businessDays, calendarDays.value)
     const overMonths = planner.load.filter((r) => r.pools[p].over)
     const idleMonths = planner.load.filter((r) => r.pools[p].utilization < 0.5)
     const avgHours = avgMemberHours(pool)
@@ -32,7 +31,7 @@ const poolStats = computed(() =>
       allocated,
       free: capacity - allocated,
       utilization: capacity ? allocated / capacity : 0,
-      manDays: pool.members.length * effectiveDays,
+      manDays: pool.members.reduce((s, m) => s + memberYearDays(planner.ctx, m, planner.year), 0),
       allocatedDays: avgHours ? allocated / avgHours : 0,
       daysMismatch: planner.state.businessDays > calendarDays.value,
       overMonths,
