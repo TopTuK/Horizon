@@ -23,6 +23,7 @@ const stubs = {
   DistributionSection: true,
   ActivityEditor: true,
   WorkingCalendarModal: true,
+  AbsenceModal: true,
   BurndownModal: true,
 }
 

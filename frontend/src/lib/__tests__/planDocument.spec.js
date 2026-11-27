@@ -40,6 +40,33 @@ describe('planDocument', () => {
 
     expect(hasWork({ ...defaultState(), businessDays: 200 })).toBe(true)
     expect(hasWork({ ...defaultState(), swimlanes: [{ id: 'l1', name: 'KNIS' }] })).toBe(true)
+
+    const away = defaultState()
+    away.pools[0].members[0].absences = [{ id: 'a', kind: 'vacation', from: '2026-01-05', to: '2026-01-09' }]
+    expect(hasWork(away)).toBe(true)
+  })
+
+  it('gives every member an absences list', () => {
+    expect(defaultState().pools[0].members[0].absences).toEqual([])
+
+    const missing = normalizeDocument({
+      version: VERSION,
+      pools: [{ id: 'dev', members: [{ id: 'm1', name: 'A', hoursPerDay: 6 }] }],
+      swimlanes: [],
+      activities: [],
+    })
+    expect(missing.pools[0].members[0].absences).toEqual([])
+
+    const corrupt = normalizeDocument({
+      pools: [{ id: 'dev', members: [{ id: 'm1', absences: 'no' }] }],
+    })
+    expect(corrupt.pools[0].members[0].absences).toEqual([])
+
+    const kept = [{ id: 'a', kind: 'vacation', from: '2026-01-05', to: '2026-01-09' }]
+    const document = normalizeDocument({
+      pools: [{ id: 'dev', members: [{ id: 'm1', absences: kept }] }],
+    })
+    expect(document.pools[0].members[0].absences).toEqual(kept)
   })
 
   it('offers the browser plan only when it holds work the editor could open', () => {
