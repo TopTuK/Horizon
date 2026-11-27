@@ -1,0 +1,9 @@
+# Local checks and end-to-end tests: adds a sign-in that needs no provider.
+#
+# Always use it with its own project name and its own ports, so that it never shares a database or the
+# port of a normal stack:
+#   docker compose -f docker-compose.yml -f docker-compose.test.yml -p horizon-test up -d --build
+services:
+  app:
+    environment:
+      ENABLE_TEST_LOGIN: "true"
